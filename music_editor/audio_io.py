@@ -4,7 +4,6 @@ Audio I/O utilities for loading and saving audio files.
 
 import numpy as np
 import soundfile as sf
-import librosa
 
 
 def load_audio(filepath: str, sr: int = None, mono: bool = False):
@@ -31,6 +30,7 @@ def load_audio(filepath: str, sr: int = None, mono: bool = False):
     """
     if filepath.lower().endswith(".mp3"):
         # librosa handles MP3 via audioread
+        import librosa
         audio, native_sr = librosa.load(filepath, sr=sr, mono=mono)
         sample_rate = sr if sr is not None else native_sr
         if not mono and audio.ndim == 1:
@@ -111,6 +111,8 @@ def get_segment(audio: np.ndarray, sample_rate: int,
 
 def _resample(audio: np.ndarray, orig_sr: int, target_sr: int) -> np.ndarray:
     """Resample audio to a new sample rate."""
+    import librosa
+
     if audio.ndim == 1:
         return librosa.resample(audio, orig_sr=orig_sr, target_sr=target_sr)
     # Multi-channel: resample each channel
