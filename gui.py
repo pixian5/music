@@ -340,7 +340,7 @@ class MusicEditorApp(tk.Tk):
     def _browse_input(self):
         path = filedialog.askopenfilename(
             title="选择输入文件 / Select input file",
-            filetypes=[("Audio files", "*.wav *.flac *.ogg *.mp3"), ("All files", "*.*")],
+            filetypes=[("Audio files", "*.wav *.flac *.ogg *.mp3 *.m4a *.mp4 *.aac *.wma"), ("All files", "*.*")],
         )
         if path:
             self._input_path.set(path)

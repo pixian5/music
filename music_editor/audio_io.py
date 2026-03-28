@@ -13,7 +13,7 @@ def load_audio(filepath: str, sr: int = None, mono: bool = False):
     Parameters
     ----------
     filepath : str
-        Path to the audio file (WAV, FLAC, OGG, MP3, etc.).
+        Path to the audio file (WAV, FLAC, OGG, MP3, M4A, AAC, WMA, etc.).
     sr : int or None
         Target sample rate. If None, the native sample rate is used.
         If an integer, the audio is resampled to this rate.
@@ -28,8 +28,11 @@ def load_audio(filepath: str, sr: int = None, mono: bool = False):
     sample_rate : int
         Sample rate of the returned audio.
     """
-    if filepath.lower().endswith(".mp3"):
-        # librosa handles MP3 via audioread
+    # Check if file format requires librosa (formats not supported by soundfile)
+    ext = filepath.lower()
+    librosa_formats = ('.mp3', '.m4a', '.mp4', '.aac', '.wma')
+    if any(ext.endswith(fmt) for fmt in librosa_formats):
+        # librosa handles these formats via audioread backend
         import librosa
         audio, native_sr = librosa.load(filepath, sr=sr, mono=mono)
         sample_rate = sr if sr is not None else native_sr
