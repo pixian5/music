@@ -93,7 +93,7 @@ music-editor fade-in input.wav output.wav --duration 2
 music-editor fade-out input.wav output.wav --duration 2
 ```
 
-支持的格式 / Supported formats: WAV, FLAC, OGG, MP3 (read), WAV, FLAC, OGG (write).
+支持的格式 / Supported formats: WAV, FLAC, OGG, MP3, M4A, AAC, WMA (read), WAV, FLAC, OGG (write).
 
 ---
 
