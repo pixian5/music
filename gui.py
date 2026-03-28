@@ -17,6 +17,17 @@ from music_editor.audio_io import load_audio, save_audio
 from music_editor.noise_reduction import NoiseReducer
 from music_editor.effects import AudioEffects
 
+OUTPUT_FORMATS = ("wav", "flac", "ogg")
+
+
+def _replace_extension(path: str, extension: str) -> str:
+    base, _ = os.path.splitext(path)
+    return f"{base}.{extension.lower()}"
+
+
+def _suggest_output_path(input_path: str, output_format: str) -> str:
+    return _replace_extension(f"{os.path.splitext(input_path)[0]}_output", output_format)
+
 
 # ---------------------------------------------------------------------------
 # Helper: run a function in a background thread and report completion
@@ -52,6 +63,7 @@ class MusicEditorApp(tk.Tk):
         self._sr = None
         self._input_path = tk.StringVar()
         self._output_path = tk.StringVar()
+        self._output_format = tk.StringVar(value="wav")
         self._status = tk.StringVar(value="就绪 / Ready")
 
         self._build_ui()
@@ -82,6 +94,15 @@ class MusicEditorApp(tk.Tk):
         ttk.Button(file_frame, text="浏览…", command=self._browse_output).grid(
             row=1, column=2, pady=(4, 0)
         )
+        output_format_combo = ttk.Combobox(
+            file_frame,
+            textvariable=self._output_format,
+            values=[fmt for fmt in OUTPUT_FORMATS],
+            state="readonly",
+            width=8,
+        )
+        output_format_combo.grid(row=1, column=3, padx=(4, 0), pady=(4, 0))
+        output_format_combo.bind("<<ComboboxSelected>>", self._on_output_format_selected)
 
         ttk.Button(file_frame, text="加载 / Load", command=self._load).grid(
             row=2, column=1, pady=(6, 0), sticky="w"
@@ -344,18 +365,26 @@ class MusicEditorApp(tk.Tk):
         )
         if path:
             self._input_path.set(path)
-            # Auto-fill output path
-            base, ext = os.path.splitext(path)
-            self._output_path.set(base + "_output" + ext)
+            self._output_path.set(_suggest_output_path(path, self._output_format.get()))
+            self._load()
 
     def _browse_output(self):
+        selected_format = self._output_format.get().lower()
         path = filedialog.asksaveasfilename(
             title="选择输出文件 / Select output file",
-            defaultextension=".wav",
+            defaultextension=f".{selected_format}",
             filetypes=[("WAV", "*.wav"), ("FLAC", "*.flac"), ("OGG", "*.ogg")],
         )
         if path:
             self._output_path.set(path)
+            chosen_ext = os.path.splitext(path)[1].lstrip(".").lower()
+            if chosen_ext in OUTPUT_FORMATS:
+                self._output_format.set(chosen_ext)
+
+    def _on_output_format_selected(self, _event=None):
+        output_path = self._output_path.get().strip()
+        if output_path:
+            self._output_path.set(_replace_extension(output_path, self._output_format.get()))
 
     def _load(self):
         path = self._input_path.get()

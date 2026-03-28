@@ -1,0 +1,60 @@
+"""Tests for GUI utility behavior."""
+
+from types import SimpleNamespace
+
+import pytest
+
+pytest.importorskip("tkinter")
+
+from gui import MusicEditorApp, _replace_extension, _suggest_output_path
+
+
+class _DummyVar:
+    def __init__(self, value=""):
+        self._value = value
+
+    def set(self, value):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+
+def test_replace_extension():
+    assert _replace_extension("/tmp/a/b_output.mp3", "wav") == "/tmp/a/b_output.wav"
+
+
+def test_suggest_output_path_uses_selected_format():
+    assert _suggest_output_path("/tmp/song.m4a", "flac") == "/tmp/song_output.flac"
+
+
+def test_browse_input_sets_output_with_selected_format_and_auto_load(monkeypatch):
+    load_calls = []
+    fake_app = SimpleNamespace(
+        _input_path=_DummyVar(),
+        _output_path=_DummyVar(),
+        _output_format=_DummyVar("ogg"),
+        _load=lambda: load_calls.append("called"),
+    )
+
+    monkeypatch.setattr(
+        "gui.filedialog.askopenfilename",
+        lambda **_kwargs: "/tmp/demo/voice.m4a",
+    )
+
+    MusicEditorApp._browse_input(fake_app)
+
+    assert fake_app._input_path.get() == "/tmp/demo/voice.m4a"
+    assert fake_app._output_path.get() == "/tmp/demo/voice_output.ogg"
+    assert load_calls == ["called"]
+
+
+def test_output_format_selection_updates_output_extension():
+    fake_app = SimpleNamespace(
+        _output_path=_DummyVar("/tmp/demo/out.flac"),
+        _output_format=_DummyVar("wav"),
+    )
+
+    MusicEditorApp._on_output_format_selected(fake_app)
+
+    assert fake_app._output_path.get() == "/tmp/demo/out.wav"
