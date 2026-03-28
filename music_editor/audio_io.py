@@ -69,7 +69,22 @@ def save_audio(filepath: str, audio: np.ndarray, sample_rate: int):
         Audio data with shape (samples,) or (samples, channels).
     sample_rate : int
         Sample rate of the audio.
+
+    Raises
+    ------
+    ValueError
+        If the output format is not supported for writing.
     """
+    # Check if the output format is supported
+    ext = filepath.lower()
+    unsupported_formats = ('.mp3', '.m4a', '.mp4', '.aac', '.wma')
+    if any(ext.endswith(fmt) for fmt in unsupported_formats):
+        raise ValueError(
+            f"Cannot save to format '{ext.split('.')[-1].upper()}'. "
+            f"Supported output formats are: WAV, FLAC, OGG. "
+            f"Please change the output file extension to .wav, .flac, or .ogg"
+        )
+
     if audio.ndim == 1:
         audio_out = audio[:, np.newaxis]
     else:
