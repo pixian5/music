@@ -97,12 +97,12 @@ class MusicEditorApp(tk.Tk):
         output_format_combo = ttk.Combobox(
             file_frame,
             textvariable=self._output_format,
-            values=[fmt for fmt in OUTPUT_FORMATS],
+            values=OUTPUT_FORMATS,
             state="readonly",
             width=8,
         )
         output_format_combo.grid(row=1, column=3, padx=(4, 0), pady=(4, 0))
-        output_format_combo.bind("<<ComboboxSelected>>", self._on_output_format_selected)
+        output_format_combo.bind("<<ComboboxSelected>>", lambda _: self._on_output_format_selected())
 
         ttk.Button(file_frame, text="加载 / Load", command=self._load).grid(
             row=2, column=1, pady=(6, 0), sticky="w"
@@ -381,7 +381,7 @@ class MusicEditorApp(tk.Tk):
             if chosen_ext in OUTPUT_FORMATS:
                 self._output_format.set(chosen_ext)
 
-    def _on_output_format_selected(self, _event=None):
+    def _on_output_format_selected(self):
         output_path = self._output_path.get().strip()
         if output_path:
             self._output_path.set(_replace_extension(output_path, self._output_format.get()))
