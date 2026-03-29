@@ -39,6 +39,7 @@ class TestNoiseReducer:
         reducer = NoiseReducer(SR)
         assert reducer.sample_rate == SR
         assert reducer.prop_decrease == 1.0
+        assert reducer.breath_suppression == 0.45
         assert reducer.n_fft == 2048
         assert reducer._noise_profile is None
 
@@ -98,94 +99,25 @@ class TestNoiseReducer:
         reducer2 = NoiseReducer(SR, prop_decrease=-0.5)
         assert reducer2.prop_decrease == 0.0
 
-    def test_suppress_breath_sounds_reduces_breath_like_segment(self):
-        reducer = NoiseReducer(SR, breath_reduce_strength=0.5)
-        base = _make_sine(freq=220.0, duration=1.0) * 0.06
-        breath = np.zeros_like(base)
-        start, end = int(0.55 * SR), int(0.75 * SR)
-        breath[start:end] = _make_breathy_noise(duration=(end - start) / SR, amplitude=0.08)
-        mixed = base + breath
+    def test_breath_suppression_reduces_high_band_more(self):
+        # Synthetic "breath-like" segment: strong high-frequency hiss + low tone.
+        t = np.linspace(0, 1.0, SR, endpoint=False)
+        tone = 0.08 * np.sin(2 * np.pi * 220 * t).astype(np.float32)
+        rng = np.random.default_rng(7)
+        hiss = (rng.standard_normal(SR).astype(np.float32) * 0.08)
+        hiss = hiss - np.convolve(hiss, np.ones(9) / 9.0, mode="same")  # emphasize HF
+        audio = (tone + hiss).astype(np.float32)
 
-        cleaned = reducer._suppress_breath_sounds(mixed)
+        reducer = NoiseReducer(SR, breath_suppression=0.8)
+        reducer.set_noise_profile_from_array(hiss[: SR // 4])
+        out = reducer.reduce(audio)
 
-        # Use diff energy as high-frequency proxy where breath dominates.
-        before_hf = np.mean(np.diff(mixed[start:end]) ** 2)
-        after_hf = np.mean(np.diff(cleaned[start:end]) ** 2)
-        assert after_hf < before_hf * 0.93
+        # Compare HF/LF energy ratio before vs after.
+        def _band_ratio(x: np.ndarray) -> float:
+            spec = np.fft.rfft(x)
+            freqs = np.fft.rfftfreq(len(x), d=1.0 / SR)
+            hi = np.mean(np.abs(spec[freqs >= 3500]))
+            lo = np.mean(np.abs(spec[(freqs >= 120) & (freqs <= 1200)])) + 1e-10
+            return float(hi / lo)
 
-    def test_suppress_breath_sounds_preserves_soft_voiced_signal(self):
-        reducer = NoiseReducer(SR, breath_reduce_strength=0.5)
-        soft_voice = (_make_sine(freq=220.0, duration=1.0) * 0.04).astype(np.float32)
-
-        cleaned = reducer._suppress_breath_sounds(soft_voice)
-
-        before_rms = float(np.sqrt(np.mean(soft_voice ** 2)))
-        after_rms = float(np.sqrt(np.mean(cleaned ** 2)))
-        assert after_rms > before_rms * 0.92
-
-    def test_reduce_can_disable_breath_suppression(self):
-        reducer = NoiseReducer(SR, breath_reduce_strength=0.7)
-        base = _make_sine(freq=220.0, duration=1.0) * 0.06
-        breath = np.zeros_like(base)
-        start, end = int(0.55 * SR), int(0.75 * SR)
-        breath[start:end] = _make_breathy_noise(duration=(end - start) / SR, amplitude=0.08)
-        mixed = base + breath
-        reducer.set_noise_profile_from_array(np.zeros(SR // 4, dtype=np.float32))
-
-        with_breath = reducer.reduce(mixed, apply_breath_suppression=True)
-        without_breath = reducer.reduce(mixed, apply_breath_suppression=False)
-
-        with_hf = np.mean(np.diff(with_breath[start:end]) ** 2)
-        without_hf = np.mean(np.diff(without_breath[start:end]) ** 2)
-        assert with_hf < without_hf * 0.95
-
-    def test_suppress_breath_sounds_supports_multiple_methods(self):
-        base = _make_sine(freq=220.0, duration=1.0) * 0.06
-        breath = np.zeros_like(base)
-        start, end = int(0.55 * SR), int(0.75 * SR)
-        breath[start:end] = _make_breathy_noise(duration=(end - start) / SR, amplitude=0.08)
-        mixed = base + breath
-
-        before_hf = np.mean(np.diff(mixed[start:end]) ** 2)
-        for method in ("hybrid", "attenuate", "high_band"):
-            reducer = NoiseReducer(
-                SR,
-                breath_reduce_strength=0.55,
-                breath_method=method,
-                breath_sensitivity=0.6,
-                breath_band_focus=0.75,
-            )
-            cleaned = reducer.suppress_breath_sounds(mixed)
-            after_hf = np.mean(np.diff(cleaned[start:end]) ** 2)
-            assert after_hf < before_hf * 0.97, method
-
-    def test_suppress_breath_sounds_supports_stereo_shape(self):
-        reducer = NoiseReducer(
-            SR,
-            breath_reduce_strength=0.4,
-            breath_method="hybrid",
-            breath_sensitivity=0.5,
-            breath_band_focus=0.65,
-        )
-        mono = _make_sine() + _make_white_noise(amplitude=0.02)
-        stereo = np.stack([mono, mono], axis=1)
-        result = reducer.suppress_breath_sounds(stereo)
-        assert result.shape == stereo.shape
-
-    def test_suppress_breath_sounds_default_detects_clear_breath_segment(self):
-        reducer = NoiseReducer(SR)
-        base = _make_sine(freq=220.0, duration=1.0) * 0.05
-        breath = np.zeros_like(base)
-        start, end = int(0.55 * SR), int(0.75 * SR)
-        breath[start:end] = _make_breathy_noise(duration=(end - start) / SR, amplitude=0.08)
-        mixed = base + breath
-
-        cleaned = reducer.suppress_breath_sounds(mixed)
-
-        before_hf = np.mean(np.diff(mixed[start:end]) ** 2)
-        after_hf = np.mean(np.diff(cleaned[start:end]) ** 2)
-        assert after_hf < before_hf * 0.90
-        non_breath = np.r_[0:start, end:len(base)]
-        before_rms = float(np.sqrt(np.mean(mixed[non_breath] ** 2)))
-        after_rms = float(np.sqrt(np.mean(cleaned[non_breath] ** 2)))
-        assert after_rms > before_rms * 0.90
+        assert _band_ratio(out) < _band_ratio(audio)

@@ -69,6 +69,7 @@ class NoiseReducer:
         self,
         sample_rate: int,
         prop_decrease: float = 1.0,
+        breath_suppression: float = 0.45,
         n_fft: int = 2048,
         hop_length: int | None = None,
         breath_reduce_strength: float = 0.35,
@@ -78,6 +79,7 @@ class NoiseReducer:
     ):
         self.sample_rate = sample_rate
         self.prop_decrease = float(np.clip(prop_decrease, 0.0, 1.0))
+        self.breath_suppression = float(np.clip(breath_suppression, 0.0, 1.0))
         self.n_fft = n_fft
         self.hop_length = hop_length if hop_length is not None else n_fft // 4
         self.breath_reduce_strength = float(np.clip(breath_reduce_strength, 0.0, 1.0))
@@ -198,20 +200,7 @@ class NoiseReducer:
             reduced = self._reduce_noisereduce(mono)
         else:
             reduced = self._reduce_spectral_gate(mono)
-        if not apply_breath_suppression:
-            return reduced
-        return self._suppress_breath_sounds(reduced)
-
-    def suppress_breath_sounds(self, audio: np.ndarray) -> np.ndarray:
-        """
-        Suppress breath sounds without running denoise first.
-        """
-        if audio.ndim == 2:
-            channels = [
-                self._suppress_breath_sounds(audio[:, ch]) for ch in range(audio.shape[1])
-            ]
-            return np.stack(channels, axis=1)
-        return self._suppress_breath_sounds(audio)
+        return self._suppress_breath_noise(reduced)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -365,13 +354,13 @@ class NoiseReducer:
             return audio_clean[:n].astype(np.float32)
         return np.pad(audio_clean, (0, n - len(audio_clean))).astype(np.float32)
 
-    def _suppress_breath_sounds(self, audio: np.ndarray) -> np.ndarray:
+    def _suppress_breath_noise(self, audio: np.ndarray) -> np.ndarray:
         """
-        Conservatively attenuate likely breath-noise frames while
-        preserving soft voiced singing.
+        Suppress breath/inhalation noise (typically broadband with strong
+        high-frequency frication energy) while preserving voiced regions.
         """
-        if self.breath_reduce_strength <= 0.0 or len(audio) < 64:
-            return audio.astype(np.float32, copy=False)
+        if self.breath_suppression <= 1e-6 or len(audio) < 64:
+            return audio.astype(np.float32)
 
         nperseg, noverlap = self._effective_fft_params(len(audio))
         freqs, _, zxx = stft(
@@ -382,120 +371,47 @@ class NoiseReducer:
             window="hann",
         )
         mag = np.abs(zxx)
-        if mag.size == 0:
-            return audio.astype(np.float32, copy=False)
+        phase = np.angle(zxx)
 
-        eps = 1e-10
-        frame_energy = np.mean(mag ** 2, axis=0)
-        sensitivity = self.breath_sensitivity
-        # Sensitivity widens accepted breath-frame energy range:
-        # higher sensitivity lowers low-percentile and raises high-percentile.
-        low_pct = float(
-            np.clip(
-                _BREATH_SENS_ENERGY_LOW_BASE - _BREATH_SENS_ENERGY_LOW_SPAN * sensitivity,
-                5.0,
-                30.0,
-            )
-        )
-        high_pct = float(
-            np.clip(
-                _BREATH_SENS_ENERGY_HIGH_BASE + _BREATH_SENS_ENERGY_HIGH_SPAN * sensitivity,
-                70.0,
-                95.0,
-            )
-        )
-        energy_low = np.percentile(frame_energy, low_pct)
-        energy_high = np.percentile(frame_energy, high_pct)
-        if energy_high <= 0:
-            return audio.astype(np.float32, copy=False)
+        # Breath noise usually has stronger relative energy above ~3.5 kHz.
+        hi_mask = freqs >= 3500.0
+        lo_mask = (freqs >= 120.0) & (freqs <= 1200.0)
+        if not np.any(hi_mask) or not np.any(lo_mask):
+            return audio.astype(np.float32)
 
-        mag_eps = mag + eps
-        mean_mag = np.mean(mag_eps, axis=0)
-        flatness = np.exp(np.mean(np.log(mag_eps), axis=0)) / mean_mag
-        low_mask = freqs <= _BREATH_LOW_FREQ_CUTOFF
-        high_mask = freqs >= _BREATH_HIGH_FREQ_CUTOFF
-        if not np.any(low_mask) or not np.any(high_mask):
-            return audio.astype(np.float32, copy=False)
+        hi_energy = np.mean(mag[hi_mask], axis=0)
+        lo_energy = np.mean(mag[lo_mask], axis=0) + 1e-10
+        breath_ratio = hi_energy / lo_energy
 
-        # Add eps for ratio divisions; percentile-based frame_energy itself
-        # does not divide and remains stable without it.
-        total_energy = np.sum(mag ** 2, axis=0) + eps
-        low_ratio = np.sum(mag[low_mask] ** 2, axis=0) / total_energy
-        high_ratio = np.sum(mag[high_mask] ** 2, axis=0) / total_energy
+        # Adaptive threshold from frame statistics.
+        th = np.quantile(breath_ratio, 0.70) + 0.15 * np.std(breath_ratio)
+        breath_frames = breath_ratio > th
+        if not np.any(breath_frames):
+            return audio.astype(np.float32)
 
-        peakiness = np.max(mag_eps, axis=0) / mean_mag
-        # Higher sensitivity makes breath detection more permissive.
-        flatness_threshold = _BREATH_MIN_FLATNESS * (
-            _BREATH_SENS_FLATNESS_BASE - _BREATH_SENS_FLATNESS_SPAN * sensitivity
-        )
-        high_ratio_threshold = _BREATH_MIN_HIGH_RATIO * (
-            _BREATH_SENS_HIGH_RATIO_BASE - _BREATH_SENS_HIGH_RATIO_SPAN * sensitivity
-        )
-        low_ratio_threshold = _BREATH_MAX_LOW_RATIO - _BREATH_SENS_LOW_RATIO_SPAN * sensitivity
-        peakiness_threshold = _BREATH_MAX_PEAKINESS * (
-            _BREATH_SENS_PEAKINESS_BASE - _BREATH_SENS_PEAKINESS_SPAN * sensitivity
-        )
+        # Smooth frame mask to avoid chattering.
+        breath_gain = np.ones_like(breath_ratio, dtype=np.float32)
+        reduction = self.breath_suppression * np.clip((breath_ratio - th) / (th + 1e-10), 0.0, 1.0)
+        breath_gain[breath_frames] = 1.0 - reduction[breath_frames]
+        breath_gain = uniform_filter1d(breath_gain, size=5, mode="nearest")
+        breath_gain = np.clip(breath_gain, 1.0 - self.breath_suppression, 1.0)
 
-        breath_like = (
-            (frame_energy >= energy_low)
-            & (frame_energy <= energy_high)
-            & (flatness > flatness_threshold)
-            & (high_ratio > high_ratio_threshold)
-            & (low_ratio < low_ratio_threshold)
-            & (peakiness < peakiness_threshold)
-        )
-        if not np.any(breath_like):
-            return audio.astype(np.float32, copy=False)
+        # Apply suppression only to the upper band.
+        gain_2d = np.ones_like(mag, dtype=np.float32)
+        gain_2d[hi_mask, :] = breath_gain[np.newaxis, :]
+        mag_clean = mag * gain_2d
 
-        mask = breath_like.astype(np.float32)
-        # Higher sensitivity broadens temporal smoothing so nearby micro-breath
-        # frames are grouped and attenuation changes remain less abrupt.
-        smooth_size = int(3 + 4 * sensitivity)
-        if smooth_size % 2 == 0:
-            smooth_size += 1
-        mask = uniform_filter1d(mask, size=max(3, smooth_size), mode="nearest")
-        mask = np.clip(mask, 0.0, 1.0)
-
-        strength = self.breath_reduce_strength
-        band_focus = self.breath_band_focus
-        min_gain = 1.0 - 0.9 * strength
-        frame_gain = np.clip(
-            1.0 - strength * (1.0 - band_focus) * mask,
-            min_gain,
-            1.0,
-        )
-        high_band_gain = np.clip(1.0 - strength * mask, min_gain, 1.0)
-        if self.breath_method == "attenuate":
-            gain = np.clip(1.0 - strength * mask, min_gain, 1.0)[np.newaxis, :]
-        elif self.breath_method == "high_band":
-            gain = np.tile(frame_gain[np.newaxis, :], (zxx.shape[0], 1))
-            gain[high_mask, :] = np.minimum(gain[high_mask, :], high_band_gain)
-        else:  # hybrid
-            gain = np.tile(frame_gain[np.newaxis, :], (zxx.shape[0], 1))
-            blended = np.clip(
-                1.0
-                - strength
-                * (_BREATH_HYBRID_FRAME_WEIGHT + _BREATH_HYBRID_BAND_WEIGHT * band_focus)
-                * mask,
-                min_gain,
-                1.0,
-            )
-            gain = np.minimum(gain, blended[np.newaxis, :])
-            gain[high_mask, :] = np.minimum(gain[high_mask, :], high_band_gain)
-
-        zxx_clean = zxx * gain
-        _, cleaned = istft(
+        zxx_clean = mag_clean * np.exp(1j * phase)
+        _, out = istft(
             zxx_clean,
             fs=self.sample_rate,
             nperseg=nperseg,
             noverlap=noverlap,
             window="hann",
         )
-
-        n = len(audio)
-        if len(cleaned) >= n:
-            return cleaned[:n].astype(np.float32)
-        return np.pad(cleaned, (0, n - len(cleaned))).astype(np.float32)
+        if len(out) >= len(audio):
+            return out[: len(audio)].astype(np.float32)
+        return np.pad(out, (0, len(audio) - len(out))).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
