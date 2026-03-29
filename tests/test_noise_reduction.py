@@ -245,4 +245,8 @@ class TestNoiseReducer:
         hp_out = np.concatenate(([out[0]], np.diff(out))).astype(np.float32)
         inhale_rms_in = np.sqrt(np.mean((hp_in[mask > 0]) ** 2))
         inhale_rms_out = np.sqrt(np.mean((hp_out[mask > 0]) ** 2))
-        assert inhale_rms_out < inhale_rms_in * 0.80
+        assert inhale_rms_out < inhale_rms_in * 0.52
+
+        inhale_peak_in = np.max(np.abs(audio[mask > 0]))
+        inhale_peak_out = np.max(np.abs(out[mask > 0]))
+        assert inhale_peak_out < inhale_peak_in * 0.45
