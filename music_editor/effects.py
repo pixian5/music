@@ -17,7 +17,7 @@ Provides common audio effects used in music editing software:
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import butter, sosfilt, fftconvolve
+from scipy.signal import butter, sosfilt, lfilter
 
 
 class AudioEffects:
@@ -41,93 +41,74 @@ class AudioEffects:
     # Volume / loudness
     # ------------------------------------------------------------------
 
-    def normalize(self, audio: np.ndarray, target_db: float = -3.0) -> np.ndarray:
+    def normalize(self, audio: np.ndarray, target_db: float = -18.0, peak_db: float = -1.0) -> np.ndarray:
         """
-        RMS-based volume normalisation.
+        Loudness normalization with peak protection.
 
-        Scales the signal so its RMS level matches *target_db* dBFS.
-
-        Parameters
-        ----------
-        audio : np.ndarray
-            Input audio.
-        target_db : float
-            Target RMS level in dBFS. Default -3 dB.
-
-        Returns
-        -------
-        np.ndarray
-            Normalised audio.
+        Uses RMS target but prevents clipping by enforcing a peak ceiling.
         """
+        audio = audio.astype(np.float32)
         rms = _rms(audio)
         if rms < 1e-10:
             return audio.copy()
+
         target_rms = 10 ** (target_db / 20.0)
-        gain = target_rms / rms
+        gain_rms = target_rms / rms
+
+        peak = float(np.max(np.abs(audio)))
+        peak_limit = 10 ** (peak_db / 20.0)
+        gain_peak = peak_limit / max(peak, 1e-10)
+
+        gain = min(gain_rms, gain_peak)
         return np.clip(audio * gain, -1.0, 1.0).astype(np.float32)
 
     def dynamic_normalize(
         self,
         audio: np.ndarray,
-        window_sec: float = 0.5,
-        target_db: float = -6.0,
-        max_gain_db: float = 24.0,
+        window_sec: float = 0.2,
+        target_db: float = -20.0,
+        max_gain_db: float = 18.0,
+        attack_sec: float = 0.02,
+        release_sec: float = 0.20,
     ) -> np.ndarray:
         """
-        Dynamic (time-varying) loudness normalisation.
+        Dynamic (time-varying) loudness normalization.
 
-        Divides the audio into overlapping windows and applies a
-        slowly varying gain to keep the volume more consistent over
-        time (similar to an auto-gain or "leveller" effect).
-
-        Parameters
-        ----------
-        audio : np.ndarray
-            Input audio.
-        window_sec : float
-            Analysis window length in seconds.
-        target_db : float
-            Target RMS level in dBFS per window.
-        max_gain_db : float
-            Maximum gain allowed (prevents over-amplification of silence).
-
-        Returns
-        -------
-        np.ndarray
-            Level-normalised audio.
+        Envelope-based AGC with attack/release smoothing, generally more
+        natural than per-window interpolation.
         """
-        audio = audio.astype(np.float32)
-        window = int(window_sec * self.sample_rate)
-        hop = window // 2
+        x = audio.astype(np.float32)
+        n = len(x) if x.ndim == 1 else x.shape[0]
+        if n == 0:
+            return x
+
+        if x.ndim == 2:
+            mono = np.mean(x, axis=1)
+        else:
+            mono = x
+
+        window = max(int(window_sec * self.sample_rate), 32)
+        kernel = np.ones(window, dtype=np.float32) / window
+        power = np.convolve(mono.astype(np.float32) ** 2, kernel, mode="same")
+        rms_curve = np.sqrt(np.maximum(power, 1e-10))
+
         target_rms = 10 ** (target_db / 20.0)
         max_gain = 10 ** (max_gain_db / 20.0)
+        desired = np.clip(target_rms / rms_curve, 1.0 / max_gain, max_gain)
 
-        # Compute per-window gain
-        n = len(audio) if audio.ndim == 1 else audio.shape[0]
-        gains = []
-        centres = []
-        for start in range(0, n, hop):
-            chunk = audio[start: start + window]
-            rms = _rms(chunk)
-            if rms < 1e-10:
-                g = 1.0
-            else:
-                g = min(target_rms / rms, max_gain)
-            gains.append(g)
-            centres.append(start + len(chunk) // 2)
+        attack = np.exp(-1.0 / max(attack_sec * self.sample_rate, 1.0))
+        release = np.exp(-1.0 / max(release_sec * self.sample_rate, 1.0))
 
-        # Interpolate gain curve
-        centres = np.array(centres, dtype=np.float32)
-        gains = np.array(gains, dtype=np.float32)
-        t = np.arange(n, dtype=np.float32)
-        gain_curve = np.interp(t, centres, gains).astype(np.float32)
+        gain_curve = np.empty_like(desired)
+        g = desired[0]
+        for i, gd in enumerate(desired):
+            coeff = attack if gd < g else release
+            g = coeff * g + (1.0 - coeff) * gd
+            gain_curve[i] = g
 
-        if audio.ndim == 1:
-            return np.clip(audio * gain_curve, -1.0, 1.0).astype(np.float32)
-        # Stereo: broadcast gain over channels
-        return np.clip(
-            audio * gain_curve[:, np.newaxis], -1.0, 1.0
-        ).astype(np.float32)
+        if x.ndim == 1:
+            return _soft_clip(x * gain_curve)
+        return _soft_clip(x * gain_curve[:, np.newaxis])
 
     # ------------------------------------------------------------------
     # Reverb / room simulation
@@ -160,11 +141,18 @@ class AudioEffects:
         np.ndarray
             Audio with studio reverb applied.
         """
-        mono = _ensure_mono_for_effect(audio)
-        reverb = _schroeder_reverb(mono, self.sample_rate, room_size, damping)
         wet = float(np.clip(wet, 0.0, 1.0))
-        mixed = (1 - wet) * mono + wet * reverb
-        return _restore_shape(mixed, audio).astype(np.float32)
+        if audio.ndim == 1:
+            reverb = _schroeder_reverb(audio.astype(np.float32), self.sample_rate, room_size, damping)
+            mixed = (1 - wet) * audio + wet * reverb
+            return _soft_clip(mixed)
+
+        channels = []
+        for ch in range(audio.shape[1]):
+            src = audio[:, ch].astype(np.float32)
+            rvb = _schroeder_reverb(src, self.sample_rate, room_size, damping)
+            channels.append(_soft_clip((1 - wet) * src + wet * rvb))
+        return np.stack(channels, axis=1).astype(np.float32)
 
     def ktv_effect(
         self,
@@ -198,15 +186,18 @@ class AudioEffects:
         np.ndarray
             Audio with KTV effect applied.
         """
-        mono = _ensure_mono_for_effect(audio)
-        # 1. Reverb
-        reverb = _schroeder_reverb(mono, self.sample_rate, room_size=0.6, damping=0.4)
-        with_reverb = (1 - reverb_wet) * mono + reverb_wet * reverb
-        # 2. Slapback echo
-        with_echo = _slapback_echo(with_reverb, self.sample_rate, echo_delay_ms, echo_decay)
-        # 3. Chorus
-        with_chorus = _chorus(with_echo, self.sample_rate, chorus_depth_ms, chorus_rate_hz)
-        return _restore_shape(with_chorus, audio).astype(np.float32)
+        def _process_channel(ch_audio: np.ndarray) -> np.ndarray:
+            reverb = _schroeder_reverb(ch_audio, self.sample_rate, room_size=0.6, damping=0.4)
+            with_reverb = (1 - reverb_wet) * ch_audio + reverb_wet * reverb
+            with_echo = _slapback_echo(with_reverb, self.sample_rate, echo_delay_ms, echo_decay)
+            with_chorus = _chorus(with_echo, self.sample_rate, chorus_depth_ms, chorus_rate_hz)
+            return _soft_clip(with_chorus)
+
+        if audio.ndim == 1:
+            return _process_channel(audio.astype(np.float32)).astype(np.float32)
+
+        channels = [_process_channel(audio[:, ch].astype(np.float32)) for ch in range(audio.shape[1])]
+        return np.stack(channels, axis=1).astype(np.float32)
 
     # ------------------------------------------------------------------
     # Pitch shifting
@@ -401,21 +392,12 @@ def _rms(audio: np.ndarray) -> float:
     return float(np.sqrt(np.mean(audio.astype(np.float64) ** 2)))
 
 
-def _ensure_mono_for_effect(audio: np.ndarray) -> np.ndarray:
-    """Return a 1-D float32 mono mix of the audio."""
-    if audio.ndim == 2:
-        return audio.mean(axis=1).astype(np.float32)
-    return audio.astype(np.float32)
-
-
-def _restore_shape(processed: np.ndarray, original: np.ndarray) -> np.ndarray:
+def _soft_clip(audio: np.ndarray, drive: float = 1.15) -> np.ndarray:
     """
-    If the original was stereo, duplicate the processed mono signal to
-    stereo.
+    Gentle soft clipper to avoid hard digital clipping artifacts.
     """
-    if original.ndim == 2:
-        return np.stack([processed, processed], axis=1)
-    return processed
+    y = np.tanh(audio.astype(np.float32) * drive) / np.tanh(drive)
+    return np.clip(y, -1.0, 1.0).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -469,24 +451,26 @@ def _schroeder_reverb(
 
 
 def _comb_filter(x: np.ndarray, delay: int, gain: float) -> np.ndarray:
-    """Feedback comb filter."""
-    out = np.zeros(len(x), dtype=np.float64)
-    for n in range(len(x)):
-        if n < delay:
-            out[n] = x[n]
-        else:
-            out[n] = x[n] + gain * out[n - delay]
-    return out
+    """Feedback comb filter implemented as IIR."""
+    # y[n] = x[n] + gain * y[n-delay]
+    b = np.zeros(delay + 1, dtype=np.float64)
+    a = np.zeros(delay + 1, dtype=np.float64)
+    b[0] = 1.0
+    a[0] = 1.0
+    a[-1] = -gain
+    return lfilter(b, a, x).astype(np.float64)
 
 
 def _allpass_filter(x: np.ndarray, delay: int, gain: float) -> np.ndarray:
-    """Schroeder all-pass filter."""
-    out = np.zeros(len(x), dtype=np.float64)
-    for n in range(len(x)):
-        delayed = out[n - delay] if n >= delay else 0.0
-        out[n] = -gain * x[n] + x[n - delay] if n >= delay else -gain * x[n]
-        out[n] += gain * delayed
-    return out
+    """Schroeder all-pass filter implemented as IIR."""
+    # H(z) = (-g + z^-d) / (1 - g z^-d)
+    b = np.zeros(delay + 1, dtype=np.float64)
+    a = np.zeros(delay + 1, dtype=np.float64)
+    b[0] = -gain
+    b[-1] = 1.0
+    a[0] = 1.0
+    a[-1] = -gain
+    return lfilter(b, a, x).astype(np.float64)
 
 
 # ---------------------------------------------------------------------------
@@ -521,24 +505,14 @@ def _chorus(
     mono = mono.astype(np.float64)
     n = len(mono)
     depth_samples = depth_ms * sr / 1000.0
-    max_delay = int(depth_samples) + 1
 
     # Modulation LFO
     t = np.arange(n) / sr
     mod = (np.sin(2 * np.pi * rate_hz * t) * 0.5 + 0.5) * depth_samples
-
-    out = np.zeros(n, dtype=np.float64)
-    for i in range(n):
-        d = mod[i]
-        di = int(d)
-        frac = d - di
-        n0 = i - di
-        n1 = n0 - 1
-        s0 = mono[n0] if n0 >= 0 else 0.0
-        s1 = mono[n1] if n1 >= 0 else 0.0
-        out[i] = mono[i] * (1 - wet) + (s0 * (1 - frac) + s1 * frac) * wet
-
-    return np.clip(out, -1.0, 1.0).astype(np.float32)
+    read_idx = np.arange(n, dtype=np.float64) - mod
+    delayed = np.interp(read_idx, np.arange(n, dtype=np.float64), mono, left=0.0, right=0.0)
+    out = mono * (1.0 - wet) + delayed * wet
+    return _soft_clip(out)
 
 
 # ---------------------------------------------------------------------------
