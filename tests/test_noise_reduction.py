@@ -138,3 +138,36 @@ class TestNoiseReducer:
         with_hf = np.mean(np.diff(with_breath[start:end]) ** 2)
         without_hf = np.mean(np.diff(without_breath[start:end]) ** 2)
         assert with_hf < without_hf * 0.95
+
+    def test_suppress_breath_sounds_supports_multiple_methods(self):
+        base = _make_sine(freq=220.0, duration=1.0) * 0.06
+        breath = np.zeros_like(base)
+        start, end = int(0.55 * SR), int(0.75 * SR)
+        breath[start:end] = _make_breathy_noise(duration=(end - start) / SR, amplitude=0.08)
+        mixed = base + breath
+
+        before_hf = np.mean(np.diff(mixed[start:end]) ** 2)
+        for method in ("hybrid", "attenuate", "high_band"):
+            reducer = NoiseReducer(
+                SR,
+                breath_reduce_strength=0.55,
+                breath_method=method,
+                breath_sensitivity=0.6,
+                breath_band_focus=0.75,
+            )
+            cleaned = reducer.suppress_breath_sounds(mixed)
+            after_hf = np.mean(np.diff(cleaned[start:end]) ** 2)
+            assert after_hf < before_hf * 0.97, method
+
+    def test_suppress_breath_sounds_supports_stereo_shape(self):
+        reducer = NoiseReducer(
+            SR,
+            breath_reduce_strength=0.4,
+            breath_method="hybrid",
+            breath_sensitivity=0.5,
+            breath_band_focus=0.65,
+        )
+        mono = _make_sine() + _make_white_noise(amplitude=0.02)
+        stereo = np.stack([mono, mono], axis=1)
+        result = reducer.suppress_breath_sounds(stereo)
+        assert result.shape == stereo.shape

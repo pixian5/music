@@ -74,7 +74,6 @@ def _cmd_denoise(ns):
     reducer = NoiseReducer(
         sr,
         prop_decrease=ns.prop_decrease,
-        breath_reduce_strength=ns.breath_reduce_strength,
     )
 
     if ns.noise_start is not None and ns.noise_end is not None:
@@ -87,7 +86,22 @@ def _cmd_denoise(ns):
         reducer.detect_and_set_noise_profile(audio)
 
     print("Reducing noise …")
-    result = reducer.reduce(audio, apply_breath_suppression=not ns.no_breath_remove)
+    result = reducer.reduce(audio, apply_breath_suppression=False)
+    save_audio(ns.output, result, sr)
+    print(f"Saved → {ns.output}")
+
+
+def _cmd_suppress_breath(ns):
+    audio, sr = load_audio(ns.input)
+    reducer = NoiseReducer(
+        sr,
+        breath_reduce_strength=ns.strength,
+        breath_method=ns.method,
+        breath_sensitivity=ns.sensitivity,
+        breath_band_focus=ns.band_focus,
+    )
+    print("Suppressing breath sounds …")
+    result = reducer.suppress_breath_sounds(audio)
     save_audio(ns.output, result, sr)
     print(f"Saved → {ns.output}")
 
@@ -234,19 +248,40 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="0-1",
         help="Proportion of noise to remove (default 1.0)",
     )
+    sp.set_defaults(func=_cmd_denoise)
+
+    # -- suppress-breath
+    sp = sub.add_parser("suppress-breath", help="Suppress breath sounds only")
+    sp.add_argument("input", help="Input audio file")
+    sp.add_argument("output", help="Output audio file")
     sp.add_argument(
-        "--breath-reduce-strength",
+        "--strength",
         type=float,
         default=0.35,
         metavar="0-1",
         help="Breath suppression strength (default 0.35)",
     )
     sp.add_argument(
-        "--no-breath-remove",
-        action="store_true",
-        help="Disable breath-sound suppression",
+        "--method",
+        choices=["hybrid", "attenuate", "high_band"],
+        default="hybrid",
+        help="Breath suppression method",
     )
-    sp.set_defaults(func=_cmd_denoise)
+    sp.add_argument(
+        "--sensitivity",
+        type=float,
+        default=0.5,
+        metavar="0-1",
+        help="Breath detection sensitivity (default 0.5)",
+    )
+    sp.add_argument(
+        "--band-focus",
+        type=float,
+        default=0.65,
+        metavar="0-1",
+        help="How strongly high-band attenuation is focused (default 0.65)",
+    )
+    sp.set_defaults(func=_cmd_suppress_breath)
 
     # -- normalize
     sp = sub.add_parser("normalize", help="RMS volume normalisation")
