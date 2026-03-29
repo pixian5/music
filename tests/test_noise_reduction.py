@@ -20,6 +20,20 @@ def _make_white_noise(amplitude=0.05, duration=1.0, sr=SR, seed=0) -> np.ndarray
     return (rng.standard_normal(int(duration * sr)) * amplitude).astype(np.float32)
 
 
+def _make_breathy_noise(duration=1.0, sr=SR, amplitude=0.03, seed=123) -> np.ndarray:
+    """
+    Create a breath-like noise (high-frequency dominant and unpitched).
+    """
+    rng = np.random.default_rng(seed)
+    n = int(duration * sr)
+    white = rng.standard_normal(n).astype(np.float32)
+    # Simple high-pass by first-order difference.
+    # Prepend first sample so diff-based signal keeps original length n.
+    breath = np.concatenate(([white[0]], np.diff(white))).astype(np.float32)
+    breath /= np.max(np.abs(breath)) + 1e-8
+    return breath * amplitude
+
+
 class TestNoiseReducer:
     def test_init_defaults(self):
         reducer = NoiseReducer(SR)
