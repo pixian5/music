@@ -195,7 +195,7 @@ class MusicEditorApp(tk.Tk):
         breath_method_combo = ttk.Combobox(
             frame,
             textvariable=self._breath_method,
-            values=("hybrid", "attenuate", "high_band"),
+            values=("ultra", "deep", "hybrid", "attenuate", "high_band"),
             state="readonly",
             width=16,
         )
@@ -244,6 +244,17 @@ class MusicEditorApp(tk.Tk):
                    command=self._run_breath_suppression).grid(
             row=5, column=0, columnspan=2, pady=10
         )
+        ttk.Label(
+            frame,
+            text=(
+                "提示：若换气音仍明显，建议 method=deep，strength≥0.75，"
+                "sensitivity≥0.75，high-band focus≥0.80；"
+                "极难去除时改用 method=ultra。"
+            ),
+            foreground="#555",
+            wraplength=520,
+            justify="left",
+        ).grid(row=6, column=0, columnspan=2, sticky="w")
         return frame
 
     def _toggle_noise_seg(self):

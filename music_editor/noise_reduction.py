@@ -32,7 +32,7 @@ _BREATH_MIN_FLATNESS = 0.16
 _BREATH_MIN_HIGH_RATIO = 0.06
 _BREATH_MAX_LOW_RATIO = 0.94
 _BREATH_MAX_PEAKINESS = 170.0
-_BREATH_METHODS = {"attenuate", "high_band", "hybrid"}
+_BREATH_METHODS = {"attenuate", "high_band", "hybrid", "deep", "ultra"}
 _BREATH_SENS_ENERGY_LOW_BASE = 20.0
 _BREATH_SENS_ENERGY_LOW_SPAN = 10.0
 _BREATH_SENS_ENERGY_HIGH_BASE = 80.0
@@ -79,6 +79,9 @@ class NoiseReducer:
     ):
         self.sample_rate = sample_rate
         self.prop_decrease = float(np.clip(prop_decrease, 0.0, 1.0))
+        # Keep backward-compatible argument names while making strength control
+        # explicit: final suppression is a product of base suppression and UI/CLI
+        # strength slider.
         self.breath_suppression = float(np.clip(breath_suppression, 0.0, 1.0))
         self.n_fft = n_fft
         self.hop_length = hop_length if hop_length is not None else n_fft // 4
@@ -92,6 +95,13 @@ class NoiseReducer:
         self.breath_sensitivity = float(np.clip(breath_sensitivity, 0.0, 1.0))
         self.breath_band_focus = float(np.clip(breath_band_focus, 0.0, 1.0))
         self._noise_profile: np.ndarray | None = None
+
+    @property
+    def _effective_breath_strength(self) -> float:
+        """
+        Final breath attenuation intensity.
+        """
+        return float(np.clip(self.breath_suppression * self.breath_reduce_strength, 0.0, 1.0))
 
     def _effective_fft_params(self, n_samples: int) -> tuple[int, int]:
         """
@@ -200,7 +210,9 @@ class NoiseReducer:
             reduced = self._reduce_noisereduce(mono)
         else:
             reduced = self._reduce_spectral_gate(mono)
-        return self._suppress_breath_noise(reduced)
+        if apply_breath_suppression:
+            return self._suppress_breath_noise(reduced)
+        return reduced.astype(np.float32)
 
     def suppress_breath_sounds(self, audio: np.ndarray) -> np.ndarray:
         """
@@ -374,7 +386,8 @@ class NoiseReducer:
         Suppress breath/inhalation noise (typically broadband with strong
         high-frequency frication energy) while preserving voiced regions.
         """
-        if self.breath_suppression <= 1e-6 or len(audio) < 64:
+        strength = self._effective_breath_strength
+        if strength <= 1e-6 or len(audio) < 64:
             return audio.astype(np.float32)
 
         nperseg, noverlap = self._effective_fft_params(len(audio))
@@ -388,51 +401,148 @@ class NoiseReducer:
         mag = np.abs(zxx)
         phase = np.angle(zxx)
 
-        # Breath noise usually has stronger relative energy above ~3.2 kHz.
-        hi_mask = freqs >= 3200.0
-        lo_mask = (freqs >= 100.0) & (freqs <= 1300.0)
+        # Method-dependent analysis bands. deep/ultra are intentionally more aggressive.
+        very_aggressive = self.breath_method in {"deep", "ultra"}
+        ultra_mode = self.breath_method == "ultra"
+        hi_start = 2000.0 if ultra_mode else (2400.0 if very_aggressive else 3000.0)
+        lo_end = 1700.0 if ultra_mode else (1500.0 if very_aggressive else 1300.0)
+        hi_mask = freqs >= hi_start
+        lo_mask = (freqs >= 100.0) & (freqs <= lo_end)
+        mid_mask = (freqs >= 1200.0) & (freqs <= 3200.0)
         if not np.any(hi_mask) or not np.any(lo_mask):
             return audio.astype(np.float32)
 
         hi_mag = mag[hi_mask]
         hi_energy = np.mean(hi_mag, axis=0)
+        total_energy = np.mean(mag, axis=0) + 1e-10
         lo_energy = np.mean(mag[lo_mask], axis=0) + 1e-10
-        breath_ratio = hi_energy / lo_energy
+        hi_ratio = hi_energy / total_energy
+        lo_ratio = lo_energy / total_energy
+        frame_energy = 20.0 * np.log10(total_energy + 1e-12)
         # Flat/noisy high-band texture tends to indicate breath more than voiced fricatives.
         hi_geo = np.exp(np.mean(np.log(hi_mag + 1e-12), axis=0))
         hi_arith = np.mean(hi_mag + 1e-12, axis=0)
         hi_flatness = hi_geo / hi_arith
+        peakiness = np.max(hi_mag + 1e-12, axis=0) / hi_arith
 
-        # Adaptive thresholds from frame statistics.
-        ratio_th = np.quantile(breath_ratio, 0.60) + 0.05 * np.std(breath_ratio)
-        flat_th = np.quantile(hi_flatness, 0.55)
-        breath_frames = (breath_ratio > ratio_th) & (hi_flatness > flat_th)
+        sens = self.breath_sensitivity
+        ratio_q = 0.7 - 0.24 * sens
+        flat_q = 0.66 - 0.24 * sens
+        ratio_th = max(
+            _BREATH_MIN_HIGH_RATIO,
+            np.quantile(hi_ratio, np.clip(ratio_q, 0.35, 0.9))
+            * (_BREATH_SENS_HIGH_RATIO_BASE - _BREATH_SENS_HIGH_RATIO_SPAN * sens),
+        )
+        flat_th = max(
+            _BREATH_MIN_FLATNESS,
+            np.quantile(hi_flatness, np.clip(flat_q, 0.35, 0.9))
+            * (_BREATH_SENS_FLATNESS_BASE - _BREATH_SENS_FLATNESS_SPAN * sens),
+        )
+        low_ratio_th = _BREATH_MAX_LOW_RATIO - _BREATH_SENS_LOW_RATIO_SPAN * sens
+        peak_th = _BREATH_MAX_PEAKINESS * (
+            _BREATH_SENS_PEAKINESS_BASE - _BREATH_SENS_PEAKINESS_SPAN * sens
+        )
+        energy_low_percentile = np.clip(
+            _BREATH_SENS_ENERGY_LOW_BASE + _BREATH_SENS_ENERGY_LOW_SPAN * sens,
+            10.0,
+            45.0,
+        )
+        energy_high_percentile = np.clip(
+            _BREATH_SENS_ENERGY_HIGH_BASE - _BREATH_SENS_ENERGY_HIGH_SPAN * sens,
+            55.0,
+            95.0,
+        )
+        low_energy_th = np.quantile(frame_energy, energy_low_percentile / 100.0)
+        high_energy_th = np.quantile(frame_energy, energy_high_percentile / 100.0)
+        quiet_frames = frame_energy <= low_energy_th
+        loud_frames = frame_energy >= high_energy_th
+        breath_frames = (
+            (hi_ratio > ratio_th)
+            & (hi_flatness > flat_th)
+            & (lo_ratio < low_ratio_th)
+            & (peakiness < peak_th)
+        )
+        if very_aggressive:
+            # Deep/ultra: for weak but annoying inhales, allow lower flatness bar on quiet frames.
+            relaxed_frames = (
+                (hi_ratio > ratio_th * (0.82 if ultra_mode else 0.88))
+                & (hi_flatness > flat_th * (0.7 if ultra_mode else 0.78))
+                & (lo_ratio < min(0.96, low_ratio_th * 1.04))
+                & quiet_frames
+            )
+            breath_frames = breath_frames | relaxed_frames
         if not np.any(breath_frames):
-            return audio.astype(np.float32)
+            if ultra_mode:
+                surrogate = (hi_ratio > ratio_th * 0.65) & quiet_frames
+                if np.any(surrogate):
+                    breath_frames = surrogate
+                else:
+                    return audio.astype(np.float32)
+            else:
+                return audio.astype(np.float32)
 
         # Smooth frame mask to avoid chattering and attacks.
-        breath_gain = np.ones_like(breath_ratio, dtype=np.float32)
-        ratio_strength = np.clip((breath_ratio - ratio_th) / (ratio_th + 1e-10), 0.0, 1.2)
+        breath_gain = np.ones_like(hi_ratio, dtype=np.float32)
+        ratio_strength = np.clip((hi_ratio - ratio_th) / (ratio_th + 1e-10), 0.0, 1.5)
         flat_strength = np.clip((hi_flatness - flat_th) / (flat_th + 1e-10), 0.0, 1.2)
-        reduction = self.breath_suppression * np.clip(
-            0.75 * ratio_strength + 0.25 * flat_strength, 0.0, 1.0
+        low_ratio_strength = np.clip(
+            (low_ratio_th - lo_ratio) / (low_ratio_th + 1e-10),
+            0.0,
+            1.2,
+        )
+        energy_strength = np.clip(
+            (high_energy_th - frame_energy) / (high_energy_th - low_energy_th + 1e-10),
+            0.0,
+            1.0,
+        )
+        energy_strength[loud_frames] *= 0.15  # protect loud sung consonants
+        reduction = strength * np.clip(
+            0.52 * ratio_strength
+            + 0.18 * flat_strength
+            + 0.14 * low_ratio_strength
+            + 0.16 * energy_strength,
+            0.0,
+            1.0,
         )
         breath_gain[breath_frames] = 1.0 - reduction[breath_frames]
-        breath_gain = uniform_filter1d(breath_gain, size=5, mode="nearest")
-        breath_gain = np.clip(breath_gain, 1.0 - self.breath_suppression, 1.0)
+        if ultra_mode:
+            # Ultra mode: extra attenuation on low-energy hiss-like frames.
+            ultra_mask = breath_frames | ((hi_ratio > ratio_th * 0.75) & quiet_frames)
+            ultra_extra = strength * (0.20 + 0.35 * sens)
+            breath_gain[ultra_mask] *= (1.0 - ultra_extra)
+
+        smooth_size = 15 if ultra_mode else (11 if self.breath_method == "deep" else 7)
+        breath_gain = uniform_filter1d(breath_gain, size=smooth_size, mode="nearest")
+        breath_gain = np.clip(breath_gain, 1.0 - strength, 1.0)
 
         # Apply suppression to upper band with frequency-dependent strength:
         # more attenuation in very high frequencies where inhale hiss dominates.
         gain_2d = np.ones_like(mag, dtype=np.float32)
         hi_freqs = freqs[hi_mask]
-        freq_weight = np.clip((hi_freqs - 3200.0) / 4200.0, 0.0, 1.0).astype(np.float32)
-        weighted_gain = 1.0 - (1.0 - breath_gain[np.newaxis, :]) * (0.35 + 0.65 * freq_weight[:, np.newaxis])
-        gain_2d[hi_mask, :] = np.clip(weighted_gain, 1.0 - self.breath_suppression, 1.0)
+        focus = 0.4 + 0.6 * self.breath_band_focus
+        denom = 3000.0 if ultra_mode else (3600.0 if self.breath_method == "deep" else 4200.0)
+        freq_weight = np.clip((hi_freqs - hi_start) / denom, 0.0, 1.0).astype(np.float32)
+        weighted_gain = 1.0 - (1.0 - breath_gain[np.newaxis, :]) * (
+            (1.0 - focus) + focus * freq_weight[:, np.newaxis]
+        )
+        gain_2d[hi_mask, :] = np.clip(weighted_gain, 1.0 - strength, 1.0)
+
+        if self.breath_method in {"hybrid", "deep", "ultra"} and np.any(mid_mask):
+            # Mild attenuation in upper-mid frication band to reduce residual breath.
+            mid_floor = 0.18 + 0.25 * float(self.breath_method == "deep") + 0.18 * float(ultra_mode)
+            mid_gain = 1.0 - (1.0 - breath_gain[np.newaxis, :]) * mid_floor
+            gain_2d[mid_mask, :] = np.minimum(gain_2d[mid_mask, :], mid_gain)
+
+        if ultra_mode:
+            # Ultra mode: frame-level ducking to remove small inhale residue.
+            global_duck = 1.0 - (1.0 - breath_gain)[np.newaxis, :] * (0.22 + 0.22 * sens)
+            gain_2d = np.minimum(gain_2d, global_duck.astype(np.float32))
 
         # For detected breath frames, estimate a residual hiss floor and subtract a portion.
         breath_floor = np.median(hi_mag[:, breath_frames], axis=1, keepdims=True)
         if breath_floor.size > 0:
-            reduction_floor = self.breath_suppression * 0.35
+            floor_base = 0.52 if ultra_mode else (0.42 if self.breath_method == "deep" else 0.3)
+            reduction_floor = strength * floor_base
             hi_mag_clean = np.maximum(
                 hi_mag * gain_2d[hi_mask, :] - reduction_floor * breath_floor,
                 0.0,
