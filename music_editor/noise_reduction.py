@@ -650,13 +650,13 @@ class NoiseReducer:
         smooth = max(int(0.016 * self.sample_rate), 16)
         kernel = np.ones(smooth, dtype=np.float32) / smooth
         duck_gain = np.convolve(duck_gain, kernel, mode="same")
-        duck_gain = np.clip(duck_gain, 0.02, 1.0)
+        duck_gain = np.clip(duck_gain, 0.01, 1.0)
 
         # Peak-aware cap in inhale-heavy samples: if envelope still spikes after
         # ducking, force additional local attenuation to avoid obvious peaks.
-        target_peak = 1.0 - 0.985 * inhale_strength
+        target_peak = 1.0 - 0.993 * inhale_strength
         abs_audio = np.abs(audio.astype(np.float32))
-        allowed = np.maximum(target_peak, 0.012)
+        allowed = np.maximum(target_peak, 0.008)
         peak_cap = np.minimum(1.0, allowed / (abs_audio + 1e-8))
         duck_gain = np.minimum(duck_gain, peak_cap).astype(np.float32)
         out = (audio.astype(np.float32) * duck_gain).astype(np.float32)
@@ -671,7 +671,7 @@ class NoiseReducer:
                 speech_ref_peak = float(np.quantile(non_inhale, 0.72))
             else:
                 speech_ref_peak = float(np.quantile(abs_out, 0.60))
-            inhale_peak_cap = max(0.007, speech_ref_peak * 0.36)
+            inhale_peak_cap = max(0.005, speech_ref_peak * 0.30)
             limiter_gain = np.ones_like(out, dtype=np.float32)
             inhale_abs = abs_out[inhale_mask]
             over_ratio = inhale_abs / (inhale_peak_cap + 1e-8)
@@ -685,8 +685,8 @@ class NoiseReducer:
             out = (out * limiter_gain.astype(np.float32)).astype(np.float32)
             # Final inhale-frame duck: ensure inhale sections are audibly lower
             # than normal singing/speech even when residual wideband energy remains.
-            final_duck = 1.0 - 0.90 * inhale_strength
-            final_duck = np.clip(final_duck, 0.05, 1.0).astype(np.float32)
+            final_duck = 1.0 - 0.94 * inhale_strength
+            final_duck = np.clip(final_duck, 0.03, 1.0).astype(np.float32)
             out = (out * final_duck).astype(np.float32)
         return out.astype(np.float32)
 

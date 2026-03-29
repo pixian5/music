@@ -12,6 +12,8 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading
 import os
+import platform
+import subprocess
 
 from music_editor.audio_io import load_audio, save_audio
 from music_editor.noise_reduction import NoiseReducer
@@ -739,6 +741,25 @@ class MusicEditorApp(tk.Tk):
 
 def main():
     app = MusicEditorApp()
+    app.after(60, app.lift)
+    app.after(80, app.focus_force)
+    if platform.system() == "Darwin":
+        # macOS: try to bring Tk window to foreground for `python gui.py`.
+        pid = os.getpid()
+        osa = (
+            'tell application "System Events" to set frontmost of '
+            f'(first process whose unix id is {pid}) to true'
+        )
+        try:
+            subprocess.run(
+                ["osascript", "-e", osa],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+        except Exception:
+            # Best-effort only: GUI should still open if this fails.
+            pass
     app.mainloop()
 
 
