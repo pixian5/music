@@ -195,7 +195,7 @@ class MusicEditorApp(tk.Tk):
         breath_method_combo = ttk.Combobox(
             frame,
             textvariable=self._breath_method,
-            values=("ultra", "deep", "hybrid", "attenuate", "high_band"),
+            values=("extreme", "ultra", "deep", "hybrid", "attenuate", "high_band"),
             state="readonly",
             width=16,
         )
@@ -249,7 +249,7 @@ class MusicEditorApp(tk.Tk):
             text=(
                 "提示：若换气音仍明显，建议 method=deep，strength≥0.75，"
                 "sensitivity≥0.75，high-band focus≥0.80；"
-                "极难去除时改用 method=ultra。"
+                "极难去除时改用 method=ultra 或 method=extreme（最强）。"
             ),
             foreground="#555",
             wraplength=520,

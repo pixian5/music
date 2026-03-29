@@ -263,9 +263,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--method",
-        choices=["ultra", "deep", "hybrid", "attenuate", "high_band"],
+        choices=["extreme", "ultra", "deep", "hybrid", "attenuate", "high_band"],
         default="hybrid",
-        help="Breath suppression method (ultra/deep are the strongest)",
+        help="Breath suppression method (extreme is strongest, then ultra/deep)",
     )
     sp.add_argument(
         "--sensitivity",
