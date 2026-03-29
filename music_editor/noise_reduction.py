@@ -494,6 +494,14 @@ class NoiseReducer:
             & (rise_db > rise_th)
             & (fall_db > rise_th * (0.75 if extreme_mode else 0.9))
         )
+        # Quiet inhale can appear as a very small low-level hump:
+        # both sides are very quiet, middle only slightly raised.
+        low_level_hump = (
+            (frame_energy < (low_energy_th + (1.0 if extreme_mode else 0.6)))
+            & (rise_db > rise_th * (0.45 if extreme_mode else 0.55))
+            & (fall_db > rise_th * (0.40 if extreme_mode else 0.50))
+            & (local_contrast_db > contrast_th * (0.33 if extreme_mode else 0.42))
+        )
         quiet_gate = quiet_frames
         if ultra_mode or extreme_mode:
             # Reduce false positives: in aggressive modes, quietness alone is
@@ -519,8 +527,18 @@ class NoiseReducer:
                 & (hi_flatness > flat_th * (0.62 if extreme_mode else (0.7 if ultra_mode else 0.78)))
                 & (lo_ratio < min(0.96, low_ratio_th * 1.04))
                 & (lo_crest < crest_th * (1.03 if extreme_mode else 1.0))
-                & (quiet_frames | has_volume_contrast)
+                & (quiet_frames | has_volume_contrast | low_level_hump)
             )
+            if extreme_mode:
+                # Extra branch for weak but structured quiet inhales.
+                quiet_hump_frames = (
+                    (hi_ratio > ratio_th * 0.58)
+                    & (hi_flatness > flat_th * 0.54)
+                    & (lo_ratio < min(0.97, low_ratio_th * 1.06))
+                    & (lo_crest < crest_th * 1.05)
+                    & low_level_hump
+                )
+                relaxed_frames = relaxed_frames | quiet_hump_frames
             breath_frames = breath_frames | relaxed_frames
         breath_frames = breath_frames & (~speech_like_frames)
         if not np.any(breath_frames):
@@ -529,6 +547,15 @@ class NoiseReducer:
                     (np.quantile(hi_ratio, 0.8) > ratio_th * (0.84 if extreme_mode else 0.92))
                     and (np.quantile(hi_flatness, 0.7) > flat_th * (0.82 if extreme_mode else 0.9))
                 )
+                if extreme_mode and not has_inhale_signature:
+                    # Secondary signature for weak quiet inhales:
+                    # low absolute energy + local hump + some high-band bias.
+                    quiet_hump_signature = (
+                        (np.quantile(frame_energy, 0.72) <= low_energy_th + 2.6)
+                        and (np.quantile(local_contrast_db, 0.85) >= contrast_th * 0.25)
+                        and (np.quantile(hi_ratio, 0.72) > ratio_th * 0.55)
+                    )
+                    has_inhale_signature = quiet_hump_signature
                 if not has_inhale_signature:
                     return audio.astype(np.float32)
                 surrogate = (
@@ -826,6 +853,9 @@ class NoiseReducer:
         min_edge_jump = 0.55 - 0.25 * sens
         min_local_contrast = 0.75 - 0.30 * sens
         max_peak_vs_global_db = -0.9 + 0.6 * (1.0 - sens)
+        quiet_peak_margin_db = 3.8 - 1.4 * sens
+        quiet_edge_margin_db = 5.0 - 1.9 * sens
+        quiet_center_lift_db = 0.40 - 0.16 * sens
 
         for start, end in zip(starts, ends):
             seg_len = end - start + 1
@@ -846,18 +876,36 @@ class NoiseReducer:
             seg_local_contrast = float(np.max(frame_energy_db[start : end + 1] - local_energy_db[start : end + 1]))
             edge_rise = float(np.max(rise_db[start : end + 1]))
             edge_fall = float(np.max(fall_db[start : end + 1]))
+            edge_floor_db = max(left_mean_db, right_mean_db)
+            center_slice_start = start + seg_len // 3
+            center_slice_end = max(center_slice_start + 1, end + 1 - seg_len // 3)
+            center_mean_db = float(np.mean(frame_energy_db[center_slice_start:center_slice_end]))
+            center_lift_db = center_mean_db - edge_floor_db
+            quiet_edge_profile = (
+                (left_mean_db <= global_energy_db - quiet_edge_margin_db)
+                and (right_mean_db <= global_energy_db - quiet_edge_margin_db)
+            )
+            quiet_low_hump = (
+                (seg_len <= (12 if extreme_mode else 14))
+                and (seg_peak_db <= global_energy_db - quiet_peak_margin_db)
+                and quiet_edge_profile
+                and (center_lift_db >= quiet_center_lift_db)
+                and (edge_rise >= min_edge_jump * 0.55)
+                and (edge_fall >= min_edge_jump * 0.50)
+            )
 
             # Inhale peak should stay clearly below average loudness of the whole file.
             if seg_peak_db > global_energy_db + max_peak_vs_global_db:
                 continue
             # Inhale should be a discontinuous bump compared with neighbors.
-            if (seg_mean_db - left_mean_db) < min_edge_jump:
-                continue
-            if (seg_mean_db - right_mean_db) < min_edge_jump:
-                continue
-            if seg_local_contrast < min_local_contrast:
-                continue
-            if edge_rise < min_edge_jump or edge_fall < min_edge_jump * 0.9:
+            strong_discontinuous = (
+                (seg_mean_db - left_mean_db) >= min_edge_jump
+                and (seg_mean_db - right_mean_db) >= min_edge_jump
+                and (seg_local_contrast >= min_local_contrast)
+                and (edge_rise >= min_edge_jump)
+                and (edge_fall >= min_edge_jump * 0.9)
+            )
+            if not (strong_discontinuous or quiet_low_hump):
                 continue
 
             refined[start : end + 1] = True
