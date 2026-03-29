@@ -351,3 +351,32 @@ class TestNoiseReducer:
         rms_out = np.sqrt(np.mean(out[region] ** 2))
         # Should preserve most of the soft speech phrase.
         assert rms_out > rms_in * 0.84
+
+    def test_refine_mask_keeps_quiet_low_hump_inhale(self):
+        reducer = NoiseReducer(SR, breath_method="extreme", breath_sensitivity=0.92)
+        n = 36
+        # Candidate inhale segment at [16, 18]:
+        # sides are very quiet, center has a small bump.
+        frame_energy = np.full(n, -33.0, dtype=np.float32)
+        frame_energy[14:16] = -39.5
+        frame_energy[16:19] = np.array([-37.1, -36.8, -37.2], dtype=np.float32)
+        frame_energy[19:21] = -39.4
+        local_energy = np.full(n, -38.8, dtype=np.float32)
+        rise = np.zeros(n, dtype=np.float32)
+        fall = np.zeros(n, dtype=np.float32)
+        rise[16:19] = np.array([0.9, 0.7, 0.4], dtype=np.float32)
+        fall[16:19] = np.array([0.4, 0.8, 0.9], dtype=np.float32)
+        mask = np.zeros(n, dtype=bool)
+        mask[16:19] = True
+
+        refined = reducer._refine_breath_frame_mask(
+            breath_frames=mask,
+            frame_energy_db=frame_energy,
+            local_energy_db=local_energy,
+            rise_db=rise,
+            fall_db=fall,
+            sens=0.92,
+            extreme_mode=True,
+            ultra_mode=False,
+        )
+        assert np.any(refined[16:19])
