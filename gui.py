@@ -191,7 +191,7 @@ class MusicEditorApp(tk.Tk):
         ttk.Label(frame, text="抑制方法 / Method:").grid(
             row=1, column=0, sticky="w", pady=(8, 0)
         )
-        self._breath_method = tk.StringVar(value="hybrid")
+        self._breath_method = tk.StringVar(value="extreme")
         breath_method_combo = ttk.Combobox(
             frame,
             textvariable=self._breath_method,
@@ -204,7 +204,7 @@ class MusicEditorApp(tk.Tk):
         ttk.Label(frame, text="抑制强度 / Strength (0–1):").grid(
             row=2, column=0, sticky="w", pady=(8, 0)
         )
-        self._breath_strength = tk.DoubleVar(value=0.35)
+        self._breath_strength = tk.DoubleVar(value=1.0)
         ttk.Scale(
             frame,
             from_=0.0,
@@ -217,7 +217,7 @@ class MusicEditorApp(tk.Tk):
         ttk.Label(frame, text="检测灵敏度 / Sensitivity (0–1):").grid(
             row=3, column=0, sticky="w", pady=(8, 0)
         )
-        self._breath_sensitivity = tk.DoubleVar(value=0.5)
+        self._breath_sensitivity = tk.DoubleVar(value=1.0)
         ttk.Scale(
             frame,
             from_=0.0,
@@ -230,7 +230,7 @@ class MusicEditorApp(tk.Tk):
         ttk.Label(frame, text="高频重点 / High-band focus (0–1):").grid(
             row=4, column=0, sticky="w", pady=(8, 0)
         )
-        self._breath_band_focus = tk.DoubleVar(value=0.65)
+        self._breath_band_focus = tk.DoubleVar(value=1.0)
         ttk.Scale(
             frame,
             from_=0.0,
