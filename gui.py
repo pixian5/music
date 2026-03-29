@@ -163,11 +163,11 @@ class MusicEditorApp(tk.Tk):
             row=0, column=3, padx=4
         )
 
-        ttk.Label(frame, text="降噪强度 / Reduction strength (0–1):").grid(
+        ttk.Label(frame, text="降噪强度 / Reduction strength (0–100):").grid(
             row=3, column=0, sticky="w", pady=(8, 0)
         )
-        self._prop_decrease = tk.DoubleVar(value=1.0)
-        ttk.Scale(frame, from_=0.0, to=1.0, variable=self._prop_decrease,
+        self._prop_decrease = tk.DoubleVar(value=100.0)
+        ttk.Scale(frame, from_=0.0, to=100.0, variable=self._prop_decrease,
                   orient="horizontal", length=220).grid(row=3, column=1, sticky="w",
                                                         pady=(8, 0))
 
@@ -201,40 +201,40 @@ class MusicEditorApp(tk.Tk):
         )
         breath_method_combo.grid(row=1, column=1, sticky="w", pady=(8, 0))
 
-        ttk.Label(frame, text="抑制强度 / Strength (0–1):").grid(
+        ttk.Label(frame, text="抑制强度 / Strength (0–100):").grid(
             row=2, column=0, sticky="w", pady=(8, 0)
         )
-        self._breath_strength = tk.DoubleVar(value=1.0)
+        self._breath_strength = tk.DoubleVar(value=100.0)
         ttk.Scale(
             frame,
             from_=0.0,
-            to=1.0,
+            to=100.0,
             variable=self._breath_strength,
             orient="horizontal",
             length=220,
         ).grid(row=2, column=1, sticky="w", pady=(8, 0))
 
-        ttk.Label(frame, text="检测灵敏度 / Sensitivity (0–1):").grid(
+        ttk.Label(frame, text="检测灵敏度 / Sensitivity (0–100):").grid(
             row=3, column=0, sticky="w", pady=(8, 0)
         )
-        self._breath_sensitivity = tk.DoubleVar(value=1.0)
+        self._breath_sensitivity = tk.DoubleVar(value=100.0)
         ttk.Scale(
             frame,
             from_=0.0,
-            to=1.0,
+            to=100.0,
             variable=self._breath_sensitivity,
             orient="horizontal",
             length=220,
         ).grid(row=3, column=1, sticky="w", pady=(8, 0))
 
-        ttk.Label(frame, text="高频重点 / High-band focus (0–1):").grid(
+        ttk.Label(frame, text="高频重点 / High-band focus (0–100):").grid(
             row=4, column=0, sticky="w", pady=(8, 0)
         )
-        self._breath_band_focus = tk.DoubleVar(value=1.0)
+        self._breath_band_focus = tk.DoubleVar(value=100.0)
         ttk.Scale(
             frame,
             from_=0.0,
-            to=1.0,
+            to=100.0,
             variable=self._breath_band_focus,
             orient="horizontal",
             length=220,
@@ -247,8 +247,8 @@ class MusicEditorApp(tk.Tk):
         ttk.Label(
             frame,
             text=(
-                "提示：若换气音仍明显，建议 method=deep，strength≥0.75，"
-                "sensitivity≥0.75，high-band focus≥0.80；"
+                "提示：若换气音仍明显，建议 method=deep，strength≥75，"
+                "sensitivity≥75，high-band focus≥80；"
                 "极难去除时改用 method=ultra 或 method=extreme（最强）。"
             ),
             foreground="#555",
@@ -507,7 +507,7 @@ class MusicEditorApp(tk.Tk):
         audio = self._audio.copy()
         sr = self._sr
         mode = self._noise_mode.get()
-        prop = self._prop_decrease.get()
+        prop = self._prop_decrease.get() / 100.0
         start = self._noise_start.get()
         end = self._noise_end.get()
         out = self._output_path.get()
@@ -534,9 +534,9 @@ class MusicEditorApp(tk.Tk):
         sr = self._sr
         enabled = self._breath_enabled.get()
         method = self._breath_method.get()
-        strength = self._breath_strength.get()
-        sensitivity = self._breath_sensitivity.get()
-        band_focus = self._breath_band_focus.get()
+        strength = self._breath_strength.get() / 100.0
+        sensitivity = self._breath_sensitivity.get() / 100.0
+        band_focus = self._breath_band_focus.get() / 100.0
         out = self._output_path.get()
 
         def _work():
