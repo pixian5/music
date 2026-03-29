@@ -39,7 +39,7 @@ class TestNoiseReducer:
         reducer = NoiseReducer(SR)
         assert reducer.sample_rate == SR
         assert reducer.prop_decrease == 1.0
-        assert reducer.breath_suppression == 0.45
+        assert reducer.breath_suppression == 0.75
         assert reducer.n_fft == 2048
         assert reducer._noise_profile is None
 
@@ -120,7 +120,7 @@ class TestNoiseReducer:
             lo = np.mean(np.abs(spec[(freqs >= 120) & (freqs <= 1200)])) + 1e-10
             return float(hi / lo)
 
-        assert _band_ratio(out) < _band_ratio(audio)
+        assert _band_ratio(out) < _band_ratio(audio) * 0.85
 
     def test_public_suppress_breath_sounds_api(self):
         reducer = NoiseReducer(SR, breath_suppression=0.6)

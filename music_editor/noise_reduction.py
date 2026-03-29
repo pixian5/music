@@ -69,7 +69,7 @@ class NoiseReducer:
         self,
         sample_rate: int,
         prop_decrease: float = 1.0,
-        breath_suppression: float = 0.45,
+        breath_suppression: float = 0.75,
         n_fft: int = 2048,
         hop_length: int | None = None,
         breath_reduce_strength: float = 0.35,
@@ -388,33 +388,59 @@ class NoiseReducer:
         mag = np.abs(zxx)
         phase = np.angle(zxx)
 
-        # Breath noise usually has stronger relative energy above ~3.5 kHz.
-        hi_mask = freqs >= 3500.0
-        lo_mask = (freqs >= 120.0) & (freqs <= 1200.0)
+        # Breath noise usually has stronger relative energy above ~3.2 kHz.
+        hi_mask = freqs >= 3200.0
+        lo_mask = (freqs >= 100.0) & (freqs <= 1300.0)
         if not np.any(hi_mask) or not np.any(lo_mask):
             return audio.astype(np.float32)
 
-        hi_energy = np.mean(mag[hi_mask], axis=0)
+        hi_mag = mag[hi_mask]
+        hi_energy = np.mean(hi_mag, axis=0)
         lo_energy = np.mean(mag[lo_mask], axis=0) + 1e-10
         breath_ratio = hi_energy / lo_energy
+        # Flat/noisy high-band texture tends to indicate breath more than voiced fricatives.
+        hi_geo = np.exp(np.mean(np.log(hi_mag + 1e-12), axis=0))
+        hi_arith = np.mean(hi_mag + 1e-12, axis=0)
+        hi_flatness = hi_geo / hi_arith
 
-        # Adaptive threshold from frame statistics.
-        th = np.quantile(breath_ratio, 0.70) + 0.15 * np.std(breath_ratio)
-        breath_frames = breath_ratio > th
+        # Adaptive thresholds from frame statistics.
+        ratio_th = np.quantile(breath_ratio, 0.60) + 0.05 * np.std(breath_ratio)
+        flat_th = np.quantile(hi_flatness, 0.55)
+        breath_frames = (breath_ratio > ratio_th) & (hi_flatness > flat_th)
         if not np.any(breath_frames):
             return audio.astype(np.float32)
 
-        # Smooth frame mask to avoid chattering.
+        # Smooth frame mask to avoid chattering and attacks.
         breath_gain = np.ones_like(breath_ratio, dtype=np.float32)
-        reduction = self.breath_suppression * np.clip((breath_ratio - th) / (th + 1e-10), 0.0, 1.0)
+        ratio_strength = np.clip((breath_ratio - ratio_th) / (ratio_th + 1e-10), 0.0, 1.2)
+        flat_strength = np.clip((hi_flatness - flat_th) / (flat_th + 1e-10), 0.0, 1.2)
+        reduction = self.breath_suppression * np.clip(
+            0.75 * ratio_strength + 0.25 * flat_strength, 0.0, 1.0
+        )
         breath_gain[breath_frames] = 1.0 - reduction[breath_frames]
         breath_gain = uniform_filter1d(breath_gain, size=5, mode="nearest")
         breath_gain = np.clip(breath_gain, 1.0 - self.breath_suppression, 1.0)
 
-        # Apply suppression only to the upper band.
+        # Apply suppression to upper band with frequency-dependent strength:
+        # more attenuation in very high frequencies where inhale hiss dominates.
         gain_2d = np.ones_like(mag, dtype=np.float32)
-        gain_2d[hi_mask, :] = breath_gain[np.newaxis, :]
-        mag_clean = mag * gain_2d
+        hi_freqs = freqs[hi_mask]
+        freq_weight = np.clip((hi_freqs - 3200.0) / 4200.0, 0.0, 1.0).astype(np.float32)
+        weighted_gain = 1.0 - (1.0 - breath_gain[np.newaxis, :]) * (0.35 + 0.65 * freq_weight[:, np.newaxis])
+        gain_2d[hi_mask, :] = np.clip(weighted_gain, 1.0 - self.breath_suppression, 1.0)
+
+        # For detected breath frames, estimate a residual hiss floor and subtract a portion.
+        breath_floor = np.median(hi_mag[:, breath_frames], axis=1, keepdims=True)
+        if breath_floor.size > 0:
+            reduction_floor = self.breath_suppression * 0.35
+            hi_mag_clean = np.maximum(
+                hi_mag * gain_2d[hi_mask, :] - reduction_floor * breath_floor,
+                0.0,
+            )
+            mag_clean = mag.copy()
+            mag_clean[hi_mask, :] = hi_mag_clean
+        else:
+            mag_clean = mag * gain_2d
 
         zxx_clean = mag_clean * np.exp(1j * phase)
         _, out = istft(
