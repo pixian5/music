@@ -480,6 +480,22 @@ class NoiseReducer:
         if not np.any(breath_frames):
             if ultra_mode or extreme_mode:
                 surrogate = (hi_ratio > ratio_th * (0.55 if extreme_mode else 0.65)) & quiet_frames
+                if extreme_mode and not np.any(surrogate):
+                    # Fallback for difficult material: pick likely inhale frames
+                    # by combining high hi-ratio and low frame energy ranking.
+                    hi_rank = hi_ratio >= np.quantile(hi_ratio, 0.78)
+                    quiet_rank = frame_energy <= np.quantile(frame_energy, 0.62)
+                    surrogate = hi_rank & quiet_rank
+                if extreme_mode and not np.any(surrogate):
+                    # Last-resort fallback: force-select top scored frames so
+                    # extreme mode always attempts audible inhale attenuation.
+                    hi_norm = (hi_ratio - np.min(hi_ratio)) / (np.ptp(hi_ratio) + 1e-12)
+                    en_norm = (frame_energy - np.min(frame_energy)) / (np.ptp(frame_energy) + 1e-12)
+                    score = 0.72 * hi_norm + 0.28 * (1.0 - en_norm)
+                    top_k = max(1, int(0.14 * len(score)))
+                    top_idx = np.argpartition(score, -top_k)[-top_k:]
+                    surrogate = np.zeros_like(score, dtype=bool)
+                    surrogate[top_idx] = True
                 if np.any(surrogate):
                     breath_frames = surrogate
                 else:
@@ -584,8 +600,54 @@ class NoiseReducer:
             window="hann",
         )
         if len(out) >= len(audio):
-            return out[: len(audio)].astype(np.float32)
-        return np.pad(out, (0, len(audio) - len(out))).astype(np.float32)
+            out = out[: len(audio)]
+        else:
+            out = np.pad(out, (0, len(audio) - len(out)))
+
+        # Additional segment-level volume ducking on detected inhale frames.
+        # This directly lowers inhale section loudness (time-domain), which helps
+        # in cases where spectral attenuation alone still leaves audible breaths.
+        if np.any(breath_frames):
+            if extreme_mode:
+                segment_factor = 0.78
+            elif ultra_mode:
+                segment_factor = 0.62
+            elif self.breath_method == "deep":
+                segment_factor = 0.50
+            else:
+                segment_factor = 0.35
+            out = self._apply_breath_segment_ducking(
+                out,
+                breath_gain=breath_gain,
+                segment_factor=segment_factor * strength,
+            )
+        return out.astype(np.float32)
+
+    def _apply_breath_segment_ducking(
+        self,
+        audio: np.ndarray,
+        breath_gain: np.ndarray,
+        segment_factor: float,
+    ) -> np.ndarray:
+        """
+        Apply time-domain ducking derived from frame-level breath gain.
+
+        `segment_factor` controls how much of frame attenuation is projected
+        to sample level (0 = disabled, 1 = full).
+        """
+        if len(audio) == 0 or breath_gain.size < 2 or segment_factor <= 1e-6:
+            return audio.astype(np.float32)
+
+        frame_x = np.linspace(0.0, 1.0, breath_gain.size, dtype=np.float32)
+        sample_x = np.linspace(0.0, 1.0, len(audio), dtype=np.float32)
+        sample_gain = np.interp(sample_x, frame_x, breath_gain.astype(np.float32))
+
+        duck_gain = 1.0 - (1.0 - sample_gain) * float(np.clip(segment_factor, 0.0, 1.0))
+        smooth = max(int(0.016 * self.sample_rate), 16)
+        kernel = np.ones(smooth, dtype=np.float32) / smooth
+        duck_gain = np.convolve(duck_gain, kernel, mode="same")
+        duck_gain = np.clip(duck_gain, 0.15, 1.0)
+        return (audio.astype(np.float32) * duck_gain).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
