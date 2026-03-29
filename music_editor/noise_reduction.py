@@ -26,6 +26,13 @@ try:
 except ImportError:  # pragma: no cover
     _NOISEREDUCE_AVAILABLE = False
 
+_BREATH_LOW_FREQ_CUTOFF = 1200.0
+_BREATH_HIGH_FREQ_CUTOFF = 2500.0
+_BREATH_MIN_FLATNESS = 0.18
+_BREATH_MIN_HIGH_RATIO = 0.08
+_BREATH_MAX_LOW_RATIO = 0.92
+_BREATH_MAX_PEAKINESS = 140.0
+
 
 class NoiseReducer:
     """
@@ -334,25 +341,29 @@ class NoiseReducer:
         if energy_high <= 0:
             return audio.astype(np.float32, copy=False)
 
-        flatness = np.exp(np.mean(np.log(mag + eps), axis=0)) / (np.mean(mag + eps, axis=0))
-        low_mask = freqs <= 1200.0
-        high_mask = freqs >= 2500.0
+        mag_eps = mag + eps
+        mean_mag = np.mean(mag_eps, axis=0)
+        flatness = np.exp(np.mean(np.log(mag_eps), axis=0)) / mean_mag
+        low_mask = freqs <= _BREATH_LOW_FREQ_CUTOFF
+        high_mask = freqs >= _BREATH_HIGH_FREQ_CUTOFF
         if not np.any(low_mask) or not np.any(high_mask):
             return audio.astype(np.float32, copy=False)
 
+        # Add eps for ratio divisions; percentile-based frame_energy itself
+        # does not divide and remains stable without it.
         total_energy = np.sum(mag ** 2, axis=0) + eps
         low_ratio = np.sum(mag[low_mask] ** 2, axis=0) / total_energy
         high_ratio = np.sum(mag[high_mask] ** 2, axis=0) / total_energy
 
-        peakiness = np.max(mag + eps, axis=0) / (np.mean(mag + eps, axis=0))
+        peakiness = np.max(mag_eps, axis=0) / mean_mag
 
         breath_like = (
             (frame_energy >= energy_low)
             & (frame_energy <= energy_high)
-            & (flatness > 0.18)
-            & (high_ratio > 0.08)
-            & (low_ratio < 0.92)
-            & (peakiness < 140.0)
+            & (flatness > _BREATH_MIN_FLATNESS)
+            & (high_ratio > _BREATH_MIN_HIGH_RATIO)
+            & (low_ratio < _BREATH_MAX_LOW_RATIO)
+            & (peakiness < _BREATH_MAX_PEAKINESS)
         )
         if not np.any(breath_like):
             return audio.astype(np.float32, copy=False)

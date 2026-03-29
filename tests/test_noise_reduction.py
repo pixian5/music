@@ -28,7 +28,8 @@ def _make_breathy_noise(duration=1.0, sr=SR, amplitude=0.03, seed=123) -> np.nda
     n = int(duration * sr)
     white = rng.standard_normal(n).astype(np.float32)
     # Simple high-pass by first-order difference.
-    breath = np.concatenate([[white[0]], np.diff(white)]).astype(np.float32)
+    # Prepend first sample so diff-based signal keeps original length n.
+    breath = np.concatenate(([white[0]], np.diff(white))).astype(np.float32)
     breath /= np.max(np.abs(breath)) + 1e-8
     return breath * amplitude
 
