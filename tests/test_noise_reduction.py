@@ -127,3 +127,32 @@ class TestNoiseReducer:
         x = _make_sine(freq=220.0, duration=0.2) + _make_white_noise(0.03, duration=0.2)
         y = reducer.suppress_breath_sounds(x)
         assert y.shape == x.shape
+
+    def test_breath_strength_parameter_changes_result(self):
+        rng = np.random.default_rng(9)
+        hiss = (rng.standard_normal(SR).astype(np.float32) * 0.06)
+        hiss = hiss - np.convolve(hiss, np.ones(7) / 7.0, mode="same")
+        t = np.linspace(0, 1.0, SR, endpoint=False)
+        tone = 0.08 * np.sin(2 * np.pi * 240 * t).astype(np.float32)
+        audio = (tone + hiss).astype(np.float32)
+
+        weak = NoiseReducer(
+            SR,
+            breath_suppression=1.0,
+            breath_reduce_strength=0.2,
+            breath_method="deep",
+            breath_sensitivity=0.8,
+            breath_band_focus=0.85,
+        ).suppress_breath_sounds(audio)
+        strong = NoiseReducer(
+            SR,
+            breath_suppression=1.0,
+            breath_reduce_strength=0.9,
+            breath_method="deep",
+            breath_sensitivity=0.8,
+            breath_band_focus=0.85,
+        ).suppress_breath_sounds(audio)
+
+        weak_hi = np.mean(np.abs(np.fft.rfft(weak))[3500:])
+        strong_hi = np.mean(np.abs(np.fft.rfft(strong))[3500:])
+        assert strong_hi < weak_hi * 0.85
