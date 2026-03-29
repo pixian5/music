@@ -171,3 +171,17 @@ class TestNoiseReducer:
         stereo = np.stack([mono, mono], axis=1)
         result = reducer.suppress_breath_sounds(stereo)
         assert result.shape == stereo.shape
+
+    def test_suppress_breath_sounds_default_detects_clear_breath_segment(self):
+        reducer = NoiseReducer(SR)
+        base = _make_sine(freq=220.0, duration=1.0) * 0.05
+        breath = np.zeros_like(base)
+        start, end = int(0.55 * SR), int(0.75 * SR)
+        breath[start:end] = _make_breathy_noise(duration=(end - start) / SR, amplitude=0.08)
+        mixed = base + breath
+
+        cleaned = reducer.suppress_breath_sounds(mixed)
+
+        before_hf = np.mean(np.diff(mixed[start:end]) ** 2)
+        after_hf = np.mean(np.diff(cleaned[start:end]) ** 2)
+        assert after_hf < before_hf * 0.90
