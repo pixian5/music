@@ -12,6 +12,8 @@ A music editing application with noise removal and a rich set of audio effects.
   **Auto-detect** – automatically finds the quietest frames as the noise reference.
 - **用户选取片段** – 用户指定某段纯噪音区间（秒），程序以此为基准在整段音频中去除类似噪音  
   **User segment** – user specifies a time range containing only ambient noise; that profile is subtracted from the entire recording.
+- **换气音抑制（唱歌）** – 在降噪后使用频谱平坦度、频带能量比例与峰值特征，保守削弱换气噪声，并尽量保留轻声人声  
+  **Breath suppression (singing)** – after denoise, conservatively attenuates likely breath sounds using spectral flatness, band-energy ratio and peakiness features, while preserving soft vocals.
 
 ### 声音效果 / Audio Effects
 | 效果 | 说明 |

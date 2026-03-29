@@ -50,11 +50,13 @@ class NoiseReducer:
         prop_decrease: float = 1.0,
         n_fft: int = 2048,
         hop_length: int | None = None,
+        breath_reduce_strength: float = 0.35,
     ):
         self.sample_rate = sample_rate
         self.prop_decrease = float(np.clip(prop_decrease, 0.0, 1.0))
         self.n_fft = n_fft
         self.hop_length = hop_length if hop_length is not None else n_fft // 4
+        self.breath_reduce_strength = float(np.clip(breath_reduce_strength, 0.0, 1.0))
         self._noise_profile: np.ndarray | None = None
 
     def _effective_fft_params(self, n_samples: int) -> tuple[int, int]:
@@ -148,8 +150,10 @@ class NoiseReducer:
             self.detect_and_set_noise_profile(mono)
 
         if _NOISEREDUCE_AVAILABLE:
-            return self._reduce_noisereduce(mono)
-        return self._reduce_spectral_gate(mono)
+            reduced = self._reduce_noisereduce(mono)
+        else:
+            reduced = self._reduce_spectral_gate(mono)
+        return self._suppress_breath_sounds(reduced)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -302,6 +306,73 @@ class NoiseReducer:
         if len(audio_clean) >= n:
             return audio_clean[:n].astype(np.float32)
         return np.pad(audio_clean, (0, n - len(audio_clean))).astype(np.float32)
+
+    def _suppress_breath_sounds(self, audio: np.ndarray) -> np.ndarray:
+        """
+        Conservatively attenuate likely breath-noise frames while
+        preserving soft voiced singing.
+        """
+        if self.breath_reduce_strength <= 0.0 or len(audio) < 64:
+            return audio.astype(np.float32, copy=False)
+
+        nperseg, noverlap = self._effective_fft_params(len(audio))
+        freqs, _, zxx = stft(
+            audio,
+            fs=self.sample_rate,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window="hann",
+        )
+        mag = np.abs(zxx)
+        if mag.size == 0:
+            return audio.astype(np.float32, copy=False)
+
+        eps = 1e-10
+        frame_energy = np.mean(mag ** 2, axis=0)
+        energy_low = np.percentile(frame_energy, 15)
+        energy_high = np.percentile(frame_energy, 85)
+        if energy_high <= 0:
+            return audio.astype(np.float32, copy=False)
+
+        flatness = np.exp(np.mean(np.log(mag + eps), axis=0)) / (np.mean(mag + eps, axis=0))
+        low_mask = freqs <= 1200.0
+        high_mask = freqs >= 2500.0
+        if not np.any(low_mask) or not np.any(high_mask):
+            return audio.astype(np.float32, copy=False)
+
+        total_energy = np.sum(mag ** 2, axis=0) + eps
+        low_ratio = np.sum(mag[low_mask] ** 2, axis=0) / total_energy
+        high_ratio = np.sum(mag[high_mask] ** 2, axis=0) / total_energy
+
+        peakiness = np.max(mag + eps, axis=0) / (np.mean(mag + eps, axis=0))
+
+        breath_like = (
+            (frame_energy >= energy_low)
+            & (frame_energy <= energy_high)
+            & (flatness > 0.18)
+            & (high_ratio > 0.08)
+            & (low_ratio < 0.92)
+            & (peakiness < 140.0)
+        )
+        if not np.any(breath_like):
+            return audio.astype(np.float32, copy=False)
+
+        mask = breath_like.astype(np.float32)
+        mask = uniform_filter1d(mask, size=3, mode="nearest")
+        attenuation = 1.0 - self.breath_reduce_strength * np.clip(mask, 0.0, 1.0)
+        zxx_clean = zxx * attenuation[np.newaxis, :]
+        _, cleaned = istft(
+            zxx_clean,
+            fs=self.sample_rate,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window="hann",
+        )
+
+        n = len(audio)
+        if len(cleaned) >= n:
+            return cleaned[:n].astype(np.float32)
+        return np.pad(cleaned, (0, n - len(cleaned))).astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
