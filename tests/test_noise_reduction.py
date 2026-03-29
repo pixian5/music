@@ -185,3 +185,7 @@ class TestNoiseReducer:
         before_hf = np.mean(np.diff(mixed[start:end]) ** 2)
         after_hf = np.mean(np.diff(cleaned[start:end]) ** 2)
         assert after_hf < before_hf * 0.90
+        non_breath = np.r_[0:start, end:len(base)]
+        before_rms = float(np.sqrt(np.mean(mixed[non_breath] ** 2)))
+        after_rms = float(np.sqrt(np.mean(cleaned[non_breath] ** 2)))
+        assert after_rms > before_rms * 0.90
