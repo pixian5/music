@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import numpy as np
 from scipy.signal import stft, istft
+from scipy.ndimage import uniform_filter1d
 
 try:
     import noisereduce as nr
@@ -55,6 +56,15 @@ class NoiseReducer:
         self.n_fft = n_fft
         self.hop_length = hop_length if hop_length is not None else n_fft // 4
         self._noise_profile: np.ndarray | None = None
+
+    def _effective_fft_params(self, n_samples: int) -> tuple[int, int]:
+        """
+        Pick robust STFT params for very short clips.
+        """
+        nperseg = int(min(self.n_fft, max(64, n_samples)))
+        hop = int(min(self.hop_length, max(16, nperseg // 4)))
+        noverlap = nperseg - hop
+        return nperseg, noverlap
 
     # ------------------------------------------------------------------
     # Public API
@@ -146,36 +156,60 @@ class NoiseReducer:
     # ------------------------------------------------------------------
 
     def _compute_noise_profile(self, segment: np.ndarray) -> np.ndarray:
-        """Compute mean noise magnitude spectrum from a segment."""
-        _, _, Zxx = stft(
+        """Compute robust noise magnitude spectrum from a segment."""
+        nperseg, noverlap = self._effective_fft_params(len(segment))
+        _, _, zxx = stft(
             segment,
             fs=self.sample_rate,
-            nperseg=self.n_fft,
-            noverlap=self.n_fft - self.hop_length,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window="hann",
         )
-        return np.mean(np.abs(Zxx), axis=1)  # shape: (n_fft//2+1,)
+        mag = np.abs(zxx)
+        # Percentile is more robust than mean when short speech leaks in.
+        return np.percentile(mag, 30, axis=1).astype(np.float32)
 
     def _auto_detect_noise_segment(self, mono: np.ndarray) -> np.ndarray:
         """
-        Find the quietest 0.5-second window in the audio and return it
-        as the noise reference segment.
+        Find several quiet windows and concatenate them as a stronger
+        noise reference segment.
         """
-        window = max(int(0.5 * self.sample_rate), self.n_fft)
-        hop = window // 2
-        energies = []
-        for start in range(0, len(mono) - window, hop):
+        window = max(int(0.4 * self.sample_rate), self.n_fft)
+        hop = max(window // 4, 1)
+        energies: list[tuple[float, int]] = []
+        zcrs: list[tuple[float, int]] = []
+
+        for start in range(0, max(len(mono) - window + 1, 1), hop):
             chunk = mono[start: start + window]
+            if len(chunk) < 8:
+                continue
             energies.append((np.mean(chunk ** 2), start))
+            signs = np.sign(chunk)
+            zcr = float(np.mean(np.abs(np.diff(signs)) > 0))
+            zcrs.append((zcr, start))
 
         if not energies:
-            return mono[: window]
+            return mono[:window]
 
-        _, best_start = min(energies, key=lambda x: x[0])
-        return mono[best_start: best_start + window]
+        # Jointly prefer low-energy and low-ZCR windows (less voiced content).
+        energy_map = {pos: e for e, pos in energies}
+        zcr_map = {pos: z for z, pos in zcrs}
+        e_values = np.array(list(energy_map.values()), dtype=np.float64)
+        z_values = np.array(list(zcr_map.values()), dtype=np.float64)
+        e_norm = (e_values - e_values.min()) / (np.ptp(e_values) + 1e-12)
+        z_norm = (z_values - z_values.min()) / (np.ptp(z_values) + 1e-12)
+
+        positions = list(energy_map.keys())
+        score = 0.75 * e_norm + 0.25 * z_norm
+        best_count = max(1, min(6, len(positions) // 6))
+        best_idx = np.argsort(score)[:best_count]
+        segments = [mono[positions[i]: positions[i] + window] for i in best_idx]
+        return np.concatenate(segments).astype(np.float32)
 
     def _reduce_noisereduce(self, audio: np.ndarray) -> np.ndarray:
         """Use the noisereduce library (stationary mode)."""
-        # Reconstruct a short noise clip from our profile via inverse FFT
+        nperseg, _ = self._effective_fft_params(len(audio))
+        hop = min(self.hop_length, nperseg // 2)
         noise_clip = self._profile_to_clip()
         return nr.reduce_noise(
             y=audio,
@@ -183,6 +217,12 @@ class NoiseReducer:
             sr=self.sample_rate,
             prop_decrease=self.prop_decrease,
             stationary=True,
+            n_fft=nperseg,
+            win_length=nperseg,
+            hop_length=hop,
+            n_std_thresh_stationary=1.2,
+            freq_mask_smooth_hz=300,
+            time_mask_smooth_ms=80,
         ).astype(np.float32)
 
     def _profile_to_clip(self) -> np.ndarray:
@@ -191,50 +231,73 @@ class NoiseReducer:
         profile so it can be passed to noisereduce.
         """
         rng = np.random.default_rng(0)
-        n_frames = 8
-        profile = self._noise_profile  # (n_fft//2+1,)
-        # Build a complex spectrum: magnitude from profile, random phase
+        n_frames = 16
+        profile = self._noise_profile
+        nperseg, noverlap = self._effective_fft_params(max(self.n_fft, len(profile) * 2))
         n_bins = len(profile)
-        phase = np.exp(
-            1j * rng.uniform(0, 2 * np.pi, (n_bins, n_frames))
-        )
-        Zxx = profile[:, np.newaxis] * phase
+        phase = np.exp(1j * rng.uniform(0, 2 * np.pi, (n_bins, n_frames)))
+        zxx = profile[:, np.newaxis] * phase
         _, clip = istft(
-            Zxx,
+            zxx,
             fs=self.sample_rate,
-            nperseg=self.n_fft,
-            noverlap=self.n_fft - self.hop_length,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window="hann",
         )
         return clip.astype(np.float32)
 
     def _reduce_spectral_gate(self, audio: np.ndarray) -> np.ndarray:
         """
-        Fallback spectral-subtraction / Wiener-filter implementation that
-        does not depend on the noisereduce package.
+        Fallback spectral gating with adaptive oversubtraction, spectral floor,
+        and temporal smoothing for fewer musical-noise artifacts.
         """
-        freqs, times, Zxx = stft(
+        nperseg, noverlap = self._effective_fft_params(len(audio))
+        _, _, zxx = stft(
             audio,
             fs=self.sample_rate,
-            nperseg=self.n_fft,
-            noverlap=self.n_fft - self.hop_length,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window="hann",
         )
-        mag = np.abs(Zxx)
-        phase = np.angle(Zxx)
+        mag = np.abs(zxx)
+        phase = np.angle(zxx)
 
-        noise = self._noise_profile[:, np.newaxis]  # broadcast over time
+        if len(self._noise_profile) != mag.shape[0]:
+            # handle short clips where effective FFT differs from configured n_fft
+            target_bins = mag.shape[0]
+            x_old = np.linspace(0.0, 1.0, len(self._noise_profile), dtype=np.float64)
+            x_new = np.linspace(0.0, 1.0, target_bins, dtype=np.float64)
+            noise_profile = np.interp(x_new, x_old, self._noise_profile).astype(np.float32)
+        else:
+            noise_profile = self._noise_profile
 
-        # Wiener-style gain
-        noise_reduced = mag - self.prop_decrease * noise
-        noise_reduced = np.maximum(noise_reduced, 0.0)
+        noise = noise_profile[:, np.newaxis]
+        snr = np.maximum((mag ** 2 - noise ** 2) / (noise ** 2 + 1e-12), 0.0)
 
-        Zxx_clean = noise_reduced * np.exp(1j * phase)
+        # More attenuation in low-SNR regions; gentler in clean regions.
+        alpha = 1.0 + self.prop_decrease * (1.8 / (1.0 + snr))
+        beta = 0.03 + 0.07 * self.prop_decrease  # spectral floor
+
+        clean_mag = mag - alpha * noise
+        clean_mag = np.maximum(clean_mag, beta * noise)
+
+        # smooth over time & frequency to reduce rough artifacts
+        clean_mag = uniform_filter1d(clean_mag, size=3, axis=0, mode="nearest")
+        clean_mag = uniform_filter1d(clean_mag, size=3, axis=1, mode="nearest")
+        # decision-directed smoothing to suppress musical noise
+        clean_mag = 0.85 * clean_mag + 0.15 * np.maximum(
+            np.roll(clean_mag, 1, axis=1), beta * noise
+        )
+
+        zxx_clean = clean_mag * np.exp(1j * phase)
         _, audio_clean = istft(
-            Zxx_clean,
+            zxx_clean,
             fs=self.sample_rate,
-            nperseg=self.n_fft,
-            noverlap=self.n_fft - self.hop_length,
+            nperseg=nperseg,
+            noverlap=noverlap,
+            window="hann",
         )
-        # Trim/pad to original length
+
         n = len(audio)
         if len(audio_clean) >= n:
             return audio_clean[:n].astype(np.float32)
