@@ -33,14 +33,13 @@ def test_audio_io_import_does_not_eager_import_librosa():
 def test_save_audio_rejects_unsupported_formats():
     """
     save_audio should raise ValueError for unsupported output formats
-    like M4A, MP3, AAC, WMA, etc.
+    like M4A, AAC, WMA, etc.
     """
     audio = np.array([0.1, 0.2, 0.3])
     sample_rate = 44100
 
     unsupported_formats = [
         'output.m4a',
-        'output.mp3',
         'output.aac',
         'output.wma',
         'output.mp4',
@@ -54,12 +53,12 @@ def test_save_audio_rejects_unsupported_formats():
 
         error_message = str(exc_info.value)
         assert "Cannot save to format" in error_message
-        assert "Supported output formats are: WAV, FLAC, OGG" in error_message
+        assert "Supported output formats are: WAV, FLAC, OGG, MP3" in error_message
 
 
 def test_save_audio_accepts_supported_formats():
     """
-    save_audio should accept WAV, FLAC, OGG formats without error.
+    save_audio should accept WAV, FLAC, OGG, MP3 formats without error.
     This test only checks that the validation passes, not actual file writing.
     """
     import tempfile
@@ -68,7 +67,7 @@ def test_save_audio_accepts_supported_formats():
     audio = np.array([0.1, 0.2, 0.3])
     sample_rate = 44100
 
-    supported_formats = ['wav', 'flac', 'ogg']
+    supported_formats = ['wav', 'flac', 'ogg', 'mp3']
 
     for fmt in supported_formats:
         with tempfile.NamedTemporaryFile(suffix=f'.{fmt}', delete=False) as tmp:
