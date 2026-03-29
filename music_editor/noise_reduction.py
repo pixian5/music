@@ -494,13 +494,22 @@ class NoiseReducer:
             & (rise_db > rise_th)
             & (fall_db > rise_th * (0.75 if extreme_mode else 0.9))
         )
+        quiet_gate = quiet_frames
+        if ultra_mode or extreme_mode:
+            # Reduce false positives: in aggressive modes, quietness alone is
+            # not enough; require stronger high-band evidence when no obvious
+            # discontinuity exists.
+            quiet_gate = quiet_frames & (
+                (hi_ratio > ratio_th * (0.98 if extreme_mode else 1.0))
+                & (hi_flatness > flat_th * (0.98 if extreme_mode else 1.0))
+            )
         breath_frames = (
             (hi_ratio > ratio_th)
             & (hi_flatness > flat_th)
             & (lo_ratio < low_ratio_th)
             & (peakiness < peak_th)
             & (lo_crest < crest_th)
-            & (has_volume_contrast | quiet_frames)
+            & (has_volume_contrast | quiet_gate)
         )
         speech_like_frames = (lo_crest >= crest_th) & (lo_ratio > np.minimum(0.98, low_ratio_th * 1.03))
         if very_aggressive:
@@ -551,6 +560,21 @@ class NoiseReducer:
                     return audio.astype(np.float32)
             else:
                 return audio.astype(np.float32)
+
+        if ultra_mode or extreme_mode:
+            original_breath_frames = breath_frames.copy()
+            breath_frames = self._refine_breath_frame_mask(
+                breath_frames=breath_frames,
+                frame_energy_db=frame_energy,
+                local_energy_db=local_energy,
+                rise_db=rise_db,
+                fall_db=fall_db,
+                sens=sens,
+                extreme_mode=extreme_mode,
+                ultra_mode=ultra_mode,
+            )
+            if not np.any(breath_frames):
+                breath_frames = original_breath_frames
 
         # Smooth frame mask to avoid chattering and attacks.
         breath_gain = np.ones_like(hi_ratio, dtype=np.float32)
@@ -758,6 +782,87 @@ class NoiseReducer:
                 hard_gain = np.convolve(hard_gain, kernel, mode="same")
                 out = (out * hard_gain.astype(np.float32)).astype(np.float32)
         return out.astype(np.float32)
+
+    def _refine_breath_frame_mask(
+        self,
+        breath_frames: np.ndarray,
+        frame_energy_db: np.ndarray,
+        local_energy_db: np.ndarray,
+        rise_db: np.ndarray,
+        fall_db: np.ndarray,
+        sens: float,
+        extreme_mode: bool,
+        ultra_mode: bool,
+    ) -> np.ndarray:
+        """
+        Segment-level post filter for inhale candidates.
+
+        Goals:
+        1) keep obvious, discontinuous inhale bumps,
+        2) reject tiny low-volume syllables inside a sentence,
+        3) enforce inhale segments to remain lower than global average loudness.
+        """
+        if not np.any(breath_frames):
+            return breath_frames
+
+        refined = np.zeros_like(breath_frames, dtype=bool)
+        n_frames = len(breath_frames)
+        idx = np.flatnonzero(breath_frames)
+        if idx.size == 0:
+            return refined
+
+        starts = [idx[0]]
+        ends: list[int] = []
+        for i in range(1, idx.size):
+            if idx[i] != idx[i - 1] + 1:
+                ends.append(idx[i - 1])
+                starts.append(idx[i])
+        ends.append(idx[-1])
+
+        global_energy_db = 20.0 * np.log10(np.mean(np.power(10.0, frame_energy_db / 20.0)) + 1e-12)
+        min_len = 1
+        max_len = 16 if extreme_mode else (18 if ultra_mode else 20)
+        side_ctx = 2 if extreme_mode else 3
+        min_edge_jump = 0.55 - 0.25 * sens
+        min_local_contrast = 0.75 - 0.30 * sens
+        max_peak_vs_global_db = -0.9 + 0.6 * (1.0 - sens)
+
+        for start, end in zip(starts, ends):
+            seg_len = end - start + 1
+            if seg_len < min_len or seg_len > max_len:
+                continue
+
+            left0 = max(0, start - side_ctx)
+            left1 = start
+            right0 = end + 1
+            right1 = min(n_frames, end + 1 + side_ctx)
+            if left1 <= left0 or right1 <= right0:
+                continue
+
+            seg_peak_db = float(np.max(frame_energy_db[start : end + 1]))
+            seg_mean_db = float(np.mean(frame_energy_db[start : end + 1]))
+            left_mean_db = float(np.mean(frame_energy_db[left0:left1]))
+            right_mean_db = float(np.mean(frame_energy_db[right0:right1]))
+            seg_local_contrast = float(np.max(frame_energy_db[start : end + 1] - local_energy_db[start : end + 1]))
+            edge_rise = float(np.max(rise_db[start : end + 1]))
+            edge_fall = float(np.max(fall_db[start : end + 1]))
+
+            # Inhale peak should stay clearly below average loudness of the whole file.
+            if seg_peak_db > global_energy_db + max_peak_vs_global_db:
+                continue
+            # Inhale should be a discontinuous bump compared with neighbors.
+            if (seg_mean_db - left_mean_db) < min_edge_jump:
+                continue
+            if (seg_mean_db - right_mean_db) < min_edge_jump:
+                continue
+            if seg_local_contrast < min_local_contrast:
+                continue
+            if edge_rise < min_edge_jump or edge_fall < min_edge_jump * 0.9:
+                continue
+
+            refined[start : end + 1] = True
+
+        return refined
 
 
 # ---------------------------------------------------------------------------
