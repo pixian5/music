@@ -44,6 +44,8 @@ _BREATH_SENS_HIGH_RATIO_SPAN = 0.6
 _BREATH_SENS_LOW_RATIO_SPAN = 0.08
 _BREATH_SENS_PEAKINESS_BASE = 1.15
 _BREATH_SENS_PEAKINESS_SPAN = 0.5
+_BREATH_SENS_CREST_BASE = 1.18
+_BREATH_SENS_CREST_SPAN = 0.42
 _BREATH_HYBRID_FRAME_WEIGHT = 0.35
 _BREATH_HYBRID_BAND_WEIGHT = 0.65
 
@@ -425,6 +427,10 @@ class NoiseReducer:
         hi_ratio = hi_energy / total_energy
         lo_ratio = lo_energy / total_energy
         frame_energy = 20.0 * np.log10(total_energy + 1e-12)
+        # Voiced speech/singing tends to present stronger tonal peaks in low-mid
+        # frequencies, while inhale noise is flatter/broader.
+        lo_mag = mag[lo_mask]
+        lo_crest = np.max(lo_mag + 1e-12, axis=0) / (np.mean(lo_mag + 1e-12, axis=0))
         # Flat/noisy high-band texture tends to indicate breath more than voiced fricatives.
         hi_geo = np.exp(np.mean(np.log(hi_mag + 1e-12), axis=0))
         hi_arith = np.mean(hi_mag + 1e-12, axis=0)
@@ -448,6 +454,10 @@ class NoiseReducer:
         peak_th = _BREATH_MAX_PEAKINESS * (
             _BREATH_SENS_PEAKINESS_BASE - _BREATH_SENS_PEAKINESS_SPAN * sens
         )
+        crest_q = 0.63 + 0.18 * (1.0 - sens)
+        crest_th = np.quantile(lo_crest, np.clip(crest_q, 0.5, 0.95)) * (
+            _BREATH_SENS_CREST_BASE - _BREATH_SENS_CREST_SPAN * sens
+        )
         energy_low_percentile = np.clip(
             _BREATH_SENS_ENERGY_LOW_BASE + _BREATH_SENS_ENERGY_LOW_SPAN * sens,
             10.0,
@@ -467,31 +477,47 @@ class NoiseReducer:
             & (hi_flatness > flat_th)
             & (lo_ratio < low_ratio_th)
             & (peakiness < peak_th)
+            & (lo_crest < crest_th)
         )
+        speech_like_frames = (lo_crest >= crest_th) & (lo_ratio > np.minimum(0.98, low_ratio_th * 1.03))
         if very_aggressive:
             # Deep/ultra: for weak but annoying inhales, allow lower flatness bar on quiet frames.
             relaxed_frames = (
                 (hi_ratio > ratio_th * (0.76 if extreme_mode else (0.82 if ultra_mode else 0.88)))
                 & (hi_flatness > flat_th * (0.62 if extreme_mode else (0.7 if ultra_mode else 0.78)))
                 & (lo_ratio < min(0.96, low_ratio_th * 1.04))
+                & (lo_crest < crest_th * (1.03 if extreme_mode else 1.0))
                 & quiet_frames
             )
             breath_frames = breath_frames | relaxed_frames
+        breath_frames = breath_frames & (~speech_like_frames)
         if not np.any(breath_frames):
             if ultra_mode or extreme_mode:
-                surrogate = (hi_ratio > ratio_th * (0.55 if extreme_mode else 0.65)) & quiet_frames
+                has_inhale_signature = (
+                    (np.quantile(hi_ratio, 0.8) > ratio_th * (0.84 if extreme_mode else 0.92))
+                    and (np.quantile(hi_flatness, 0.7) > flat_th * (0.82 if extreme_mode else 0.9))
+                )
+                if not has_inhale_signature:
+                    return audio.astype(np.float32)
+                surrogate = (
+                    (hi_ratio > ratio_th * (0.55 if extreme_mode else 0.65))
+                    & quiet_frames
+                    & (lo_crest < crest_th * (1.06 if extreme_mode else 1.0))
+                )
                 if extreme_mode and not np.any(surrogate):
                     # Fallback for difficult material: pick likely inhale frames
                     # by combining high hi-ratio and low frame energy ranking.
                     hi_rank = hi_ratio >= np.quantile(hi_ratio, 0.78)
                     quiet_rank = frame_energy <= np.quantile(frame_energy, 0.62)
-                    surrogate = hi_rank & quiet_rank
+                    crest_rank = lo_crest <= np.quantile(lo_crest, 0.52)
+                    surrogate = hi_rank & quiet_rank & crest_rank
                 if extreme_mode and not np.any(surrogate):
                     # Last-resort fallback: force-select top scored frames so
                     # extreme mode always attempts audible inhale attenuation.
                     hi_norm = (hi_ratio - np.min(hi_ratio)) / (np.ptp(hi_ratio) + 1e-12)
                     en_norm = (frame_energy - np.min(frame_energy)) / (np.ptp(frame_energy) + 1e-12)
-                    score = 0.72 * hi_norm + 0.28 * (1.0 - en_norm)
+                    crest_norm = (lo_crest - np.min(lo_crest)) / (np.ptp(lo_crest) + 1e-12)
+                    score = 0.56 * hi_norm + 0.26 * (1.0 - en_norm) + 0.18 * (1.0 - crest_norm)
                     top_k = max(1, int(0.14 * len(score)))
                     top_idx = np.argpartition(score, -top_k)[-top_k:]
                     surrogate = np.zeros_like(score, dtype=bool)

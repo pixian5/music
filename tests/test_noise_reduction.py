@@ -250,3 +250,36 @@ class TestNoiseReducer:
         inhale_peak_in = np.max(np.abs(audio[mask > 0]))
         inhale_peak_out = np.max(np.abs(out[mask > 0]))
         assert inhale_peak_out < inhale_peak_in * 0.45
+
+    def test_breath_detection_avoids_low_volume_voiced_edges(self):
+        n = SR * 2
+        t = np.linspace(0, 2.0, n, endpoint=False)
+        voice = (
+            0.22 * np.sin(2 * np.pi * 220 * t)
+            + 0.07 * np.sin(2 * np.pi * 440 * t)
+        ).astype(np.float32)
+        # Simulate quiet start/end of speech with fades (not breath).
+        ramp = np.ones(n, dtype=np.float32)
+        edge = int(0.22 * SR)
+        ramp[:edge] = np.linspace(0.02, 1.0, edge, dtype=np.float32)
+        ramp[-edge:] = np.linspace(1.0, 0.02, edge, dtype=np.float32)
+        audio = (voice * ramp).astype(np.float32)
+
+        out = NoiseReducer(
+            SR,
+            breath_suppression=1.0,
+            breath_reduce_strength=0.95,
+            breath_method="extreme",
+            breath_sensitivity=0.92,
+            breath_band_focus=0.95,
+        ).suppress_breath_sounds(audio)
+
+        head = slice(0, int(0.18 * SR))
+        tail = slice(n - int(0.18 * SR), n)
+        head_rms_in = np.sqrt(np.mean(audio[head] ** 2))
+        tail_rms_in = np.sqrt(np.mean(audio[tail] ** 2))
+        head_rms_out = np.sqrt(np.mean(out[head] ** 2))
+        tail_rms_out = np.sqrt(np.mean(out[tail] ** 2))
+
+        assert head_rms_out > head_rms_in * 0.8
+        assert tail_rms_out > tail_rms_in * 0.8
