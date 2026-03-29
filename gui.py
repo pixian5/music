@@ -17,7 +17,7 @@ from music_editor.audio_io import load_audio, save_audio
 from music_editor.noise_reduction import NoiseReducer
 from music_editor.effects import AudioEffects
 
-OUTPUT_FORMATS = ("wav", "flac", "ogg")
+OUTPUT_FORMATS = ("wav", "flac", "ogg", "mp3")
 
 
 def _replace_extension(path: str, extension: str) -> str:
@@ -63,7 +63,7 @@ class MusicEditorApp(tk.Tk):
         self._sr = None
         self._input_path = tk.StringVar()
         self._output_path = tk.StringVar()
-        self._output_format = tk.StringVar(value="wav")
+        self._output_format = tk.StringVar(value="mp3")
         self._status = tk.StringVar(value="就绪 / Ready")
 
         self._build_ui()
@@ -112,6 +112,7 @@ class MusicEditorApp(tk.Tk):
         nb = ttk.Notebook(self)
         nb.pack(fill="both", expand=True, padx=10, pady=4)
 
+        nb.add(self._build_breath_tab(nb), text="换气音抑制 / Breath")
         nb.add(self._build_noise_tab(nb), text="降噪 / Noise Removal")
         nb.add(self._build_normalize_tab(nb), text="音量 / Volume")
         nb.add(self._build_reverb_tab(nb), text="混响 / Reverb")
@@ -176,6 +177,73 @@ class MusicEditorApp(tk.Tk):
         )
 
         self._toggle_noise_seg()
+        return frame
+
+    def _build_breath_tab(self, parent):
+        frame = ttk.Frame(parent, padding=10)
+        self._breath_enabled = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            frame,
+            text="启用换气音抑制 / Enable breath suppression",
+            variable=self._breath_enabled,
+        ).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        ttk.Label(frame, text="抑制方法 / Method:").grid(
+            row=1, column=0, sticky="w", pady=(8, 0)
+        )
+        self._breath_method = tk.StringVar(value="hybrid")
+        breath_method_combo = ttk.Combobox(
+            frame,
+            textvariable=self._breath_method,
+            values=("hybrid", "attenuate", "high_band"),
+            state="readonly",
+            width=16,
+        )
+        breath_method_combo.grid(row=1, column=1, sticky="w", pady=(8, 0))
+
+        ttk.Label(frame, text="抑制强度 / Strength (0–1):").grid(
+            row=2, column=0, sticky="w", pady=(8, 0)
+        )
+        self._breath_strength = tk.DoubleVar(value=0.35)
+        ttk.Scale(
+            frame,
+            from_=0.0,
+            to=1.0,
+            variable=self._breath_strength,
+            orient="horizontal",
+            length=220,
+        ).grid(row=2, column=1, sticky="w", pady=(8, 0))
+
+        ttk.Label(frame, text="检测灵敏度 / Sensitivity (0–1):").grid(
+            row=3, column=0, sticky="w", pady=(8, 0)
+        )
+        self._breath_sensitivity = tk.DoubleVar(value=0.5)
+        ttk.Scale(
+            frame,
+            from_=0.0,
+            to=1.0,
+            variable=self._breath_sensitivity,
+            orient="horizontal",
+            length=220,
+        ).grid(row=3, column=1, sticky="w", pady=(8, 0))
+
+        ttk.Label(frame, text="高频重点 / High-band focus (0–1):").grid(
+            row=4, column=0, sticky="w", pady=(8, 0)
+        )
+        self._breath_band_focus = tk.DoubleVar(value=0.65)
+        ttk.Scale(
+            frame,
+            from_=0.0,
+            to=1.0,
+            variable=self._breath_band_focus,
+            orient="horizontal",
+            length=220,
+        ).grid(row=4, column=1, sticky="w", pady=(8, 0))
+
+        ttk.Button(frame, text="执行换气音抑制 / Apply Breath Suppression",
+                   command=self._run_breath_suppression).grid(
+            row=5, column=0, columnspan=2, pady=10
+        )
         return frame
 
     def _toggle_noise_seg(self):
@@ -373,7 +441,7 @@ class MusicEditorApp(tk.Tk):
         path = filedialog.asksaveasfilename(
             title="选择输出文件 / Select output file",
             defaultextension=f".{selected_format}",
-            filetypes=[("WAV", "*.wav"), ("FLAC", "*.flac"), ("OGG", "*.ogg")],
+            filetypes=[("WAV", "*.wav"), ("FLAC", "*.flac"), ("OGG", "*.ogg"), ("MP3", "*.mp3")],
         )
         if path:
             self._output_path.set(path)
@@ -434,15 +502,48 @@ class MusicEditorApp(tk.Tk):
         out = self._output_path.get()
 
         def _work():
-            reducer = NoiseReducer(sr, prop_decrease=prop)
+            reducer = NoiseReducer(
+                sr,
+                prop_decrease=prop,
+            )
             if mode == "manual":
                 reducer.set_noise_profile_from_segment(audio, start, end)
             else:
                 reducer.detect_and_set_noise_profile(audio)
-            result = reducer.reduce(audio)
+            result = reducer.reduce(audio, apply_breath_suppression=False)
             save_audio(out, result, sr)
 
         self._set_status("正在降噪… / Reducing noise…")
+        self._run_async(_work, lambda _: self._set_status(f"已保存 / Saved → {out}"))
+
+    def _run_breath_suppression(self):
+        if not self._require_audio() or not self._require_output():
+            return
+        audio = self._audio.copy()
+        sr = self._sr
+        enabled = self._breath_enabled.get()
+        method = self._breath_method.get()
+        strength = self._breath_strength.get()
+        sensitivity = self._breath_sensitivity.get()
+        band_focus = self._breath_band_focus.get()
+        out = self._output_path.get()
+
+        def _work():
+            reducer = NoiseReducer(
+                sr,
+                breath_reduce_strength=strength,
+                breath_method=method,
+                breath_sensitivity=sensitivity,
+                breath_band_focus=band_focus,
+            )
+            result = (
+                reducer.suppress_breath_sounds(audio)
+                if enabled
+                else audio.astype("float32", copy=False)
+            )
+            save_audio(out, result, sr)
+
+        self._set_status("正在抑制换气音… / Suppressing breath sounds…")
         self._run_async(_work, lambda _: self._set_status(f"已保存 / Saved → {out}"))
 
     def _run_normalize(self):

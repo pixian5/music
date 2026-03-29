@@ -12,6 +12,8 @@ A music editing application with noise removal and a rich set of audio effects.
   **Auto-detect** – automatically finds the quietest frames as the noise reference.
 - **用户选取片段** – 用户指定某段纯噪音区间（秒），程序以此为基准在整段音频中去除类似噪音  
   **User segment** – user specifies a time range containing only ambient noise; that profile is subtracted from the entire recording.
+- **换气音抑制（唱歌）** – 在降噪后使用频谱平坦度、频带能量比例与峰值特征，保守削弱换气噪声，并尽量保留轻声人声  
+  **Breath suppression (singing)** – after denoise, conservatively attenuates likely breath sounds using spectral flatness, band-energy ratio and peakiness features, while preserving soft vocals.
 
 ### 声音效果 / Audio Effects
 | 效果 | 说明 |
@@ -51,10 +53,13 @@ python gui.py
 
 ```bash
 # 自动降噪 / Auto noise removal
-music-editor denoise input.wav output.wav
+music-editor denoise input.wav output.mp3
 
 # 用户选取噪音片段（前3秒为纯噪音）/ User noise segment (first 3s is ambient noise)
-music-editor denoise input.wav output.wav --noise-start 0 --noise-end 3
+music-editor denoise input.wav output.mp3 --noise-start 0 --noise-end 3
+
+# 换气音抑制（独立命令）/ Breath suppression (standalone command)
+music-editor suppress-breath input.wav output.mp3 --strength 0.5 --method hybrid
 
 # 音量归一化 / Volume normalization
 music-editor normalize input.wav output.wav
@@ -93,7 +98,10 @@ music-editor fade-in input.wav output.wav --duration 2
 music-editor fade-out input.wav output.wav --duration 2
 ```
 
-支持的格式 / Supported formats: WAV, FLAC, OGG, MP3, M4A, AAC, WMA (read), WAV, FLAC, OGG (write).
+支持的格式 / Supported formats: WAV, FLAC, OGG, MP3, M4A, AAC, WMA (read), WAV, FLAC, OGG, MP3 (write).
+
+“唱歌换气音”功能位置：在图形界面最前面的 **换气音抑制 / Breath** 标签页，提供独立开关、抑制方法（hybrid / attenuate / high_band）、抑制强度、检测灵敏度和高频重点的细粒度控制。
+Where to find “breath suppression for singing”: the first GUI tab is **换气音抑制 / Breath**, with independent toggle, method selection (hybrid / attenuate / high_band), strength, sensitivity, and high-band focus controls.
 
 ---
 

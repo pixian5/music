@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("tkinter")
 
-from gui import MusicEditorApp, _replace_extension, _suggest_output_path
+from gui import MusicEditorApp, OUTPUT_FORMATS, _replace_extension, _suggest_output_path
 
 
 class _DummyVar:
@@ -58,3 +58,11 @@ def test_output_format_selection_updates_output_extension():
     MusicEditorApp._on_output_format_selected(fake_app)
 
     assert fake_app._output_path.get() == "/tmp/demo/out.wav"
+
+
+def test_output_formats_include_mp3():
+    assert "mp3" in OUTPUT_FORMATS
+
+
+def test_suggest_output_path_defaults_to_mp3_extension():
+    assert _suggest_output_path("/tmp/song.wav", "mp3") == "/tmp/song_output.mp3"

@@ -26,6 +26,27 @@ try:
 except ImportError:  # pragma: no cover
     _NOISEREDUCE_AVAILABLE = False
 
+_BREATH_LOW_FREQ_CUTOFF = 1200.0
+_BREATH_HIGH_FREQ_CUTOFF = 2500.0
+_BREATH_MIN_FLATNESS = 0.16
+_BREATH_MIN_HIGH_RATIO = 0.06
+_BREATH_MAX_LOW_RATIO = 0.94
+_BREATH_MAX_PEAKINESS = 170.0
+_BREATH_METHODS = {"attenuate", "high_band", "hybrid"}
+_BREATH_SENS_ENERGY_LOW_BASE = 20.0
+_BREATH_SENS_ENERGY_LOW_SPAN = 10.0
+_BREATH_SENS_ENERGY_HIGH_BASE = 80.0
+_BREATH_SENS_ENERGY_HIGH_SPAN = 10.0
+_BREATH_SENS_FLATNESS_BASE = 1.15
+_BREATH_SENS_FLATNESS_SPAN = 0.5
+_BREATH_SENS_HIGH_RATIO_BASE = 1.2
+_BREATH_SENS_HIGH_RATIO_SPAN = 0.6
+_BREATH_SENS_LOW_RATIO_SPAN = 0.08
+_BREATH_SENS_PEAKINESS_BASE = 1.15
+_BREATH_SENS_PEAKINESS_SPAN = 0.5
+_BREATH_HYBRID_FRAME_WEIGHT = 0.35
+_BREATH_HYBRID_BAND_WEIGHT = 0.65
+
 
 class NoiseReducer:
     """
@@ -51,12 +72,25 @@ class NoiseReducer:
         breath_suppression: float = 0.75,
         n_fft: int = 2048,
         hop_length: int | None = None,
+        breath_reduce_strength: float = 0.35,
+        breath_method: str = "hybrid",
+        breath_sensitivity: float = 0.5,
+        breath_band_focus: float = 0.65,
     ):
         self.sample_rate = sample_rate
         self.prop_decrease = float(np.clip(prop_decrease, 0.0, 1.0))
         self.breath_suppression = float(np.clip(breath_suppression, 0.0, 1.0))
         self.n_fft = n_fft
         self.hop_length = hop_length if hop_length is not None else n_fft // 4
+        self.breath_reduce_strength = float(np.clip(breath_reduce_strength, 0.0, 1.0))
+        if breath_method not in _BREATH_METHODS:
+            raise ValueError(
+                f"Unsupported breath_method '{breath_method}'. "
+                f"Expected one of {sorted(_BREATH_METHODS)}."
+            )
+        self.breath_method = breath_method
+        self.breath_sensitivity = float(np.clip(breath_sensitivity, 0.0, 1.0))
+        self.breath_band_focus = float(np.clip(breath_band_focus, 0.0, 1.0))
         self._noise_profile: np.ndarray | None = None
 
     def _effective_fft_params(self, n_samples: int) -> tuple[int, int]:
@@ -123,7 +157,11 @@ class NoiseReducer:
         profile_segment = self._auto_detect_noise_segment(mono)
         self._noise_profile = self._compute_noise_profile(profile_segment)
 
-    def reduce(self, audio: np.ndarray) -> np.ndarray:
+    def reduce(
+        self,
+        audio: np.ndarray,
+        apply_breath_suppression: bool = True,
+    ) -> np.ndarray:
         """
         Remove noise from an audio signal.
 
@@ -134,6 +172,9 @@ class NoiseReducer:
         ----------
         audio : np.ndarray
             Audio signal with shape (samples,) or (samples, channels).
+        apply_breath_suppression : bool
+            Whether to apply breath-sound suppression after denoising.
+            Default True.
 
         Returns
         -------
@@ -142,7 +183,13 @@ class NoiseReducer:
         """
         stereo_input = audio.ndim == 2
         if stereo_input:
-            channels = [self.reduce(audio[:, ch]) for ch in range(audio.shape[1])]
+            channels = [
+                self.reduce(
+                    audio[:, ch],
+                    apply_breath_suppression=apply_breath_suppression,
+                )
+                for ch in range(audio.shape[1])
+            ]
             return np.stack(channels, axis=1)
 
         mono = audio.astype(np.float32)
