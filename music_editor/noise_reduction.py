@@ -130,7 +130,11 @@ class NoiseReducer:
         profile_segment = self._auto_detect_noise_segment(mono)
         self._noise_profile = self._compute_noise_profile(profile_segment)
 
-    def reduce(self, audio: np.ndarray) -> np.ndarray:
+    def reduce(
+        self,
+        audio: np.ndarray,
+        apply_breath_suppression: bool = True,
+    ) -> np.ndarray:
         """
         Remove noise from an audio signal.
 
@@ -141,6 +145,9 @@ class NoiseReducer:
         ----------
         audio : np.ndarray
             Audio signal with shape (samples,) or (samples, channels).
+        apply_breath_suppression : bool
+            Whether to apply breath-sound suppression after denoising.
+            Default True.
 
         Returns
         -------
@@ -149,7 +156,13 @@ class NoiseReducer:
         """
         stereo_input = audio.ndim == 2
         if stereo_input:
-            channels = [self.reduce(audio[:, ch]) for ch in range(audio.shape[1])]
+            channels = [
+                self.reduce(
+                    audio[:, ch],
+                    apply_breath_suppression=apply_breath_suppression,
+                )
+                for ch in range(audio.shape[1])
+            ]
             return np.stack(channels, axis=1)
 
         mono = audio.astype(np.float32)
@@ -160,6 +173,8 @@ class NoiseReducer:
             reduced = self._reduce_noisereduce(mono)
         else:
             reduced = self._reduce_spectral_gate(mono)
+        if not apply_breath_suppression:
+            return reduced
         return self._suppress_breath_sounds(reduced)
 
     # ------------------------------------------------------------------

@@ -122,3 +122,19 @@ class TestNoiseReducer:
         before_rms = float(np.sqrt(np.mean(soft_voice ** 2)))
         after_rms = float(np.sqrt(np.mean(cleaned ** 2)))
         assert after_rms > before_rms * 0.92
+
+    def test_reduce_can_disable_breath_suppression(self):
+        reducer = NoiseReducer(SR, breath_reduce_strength=0.7)
+        base = _make_sine(freq=220.0, duration=1.0) * 0.06
+        breath = np.zeros_like(base)
+        start, end = int(0.55 * SR), int(0.75 * SR)
+        breath[start:end] = _make_breathy_noise(duration=(end - start) / SR, amplitude=0.08)
+        mixed = base + breath
+        reducer.set_noise_profile_from_array(np.zeros(SR // 4, dtype=np.float32))
+
+        with_breath = reducer.reduce(mixed, apply_breath_suppression=True)
+        without_breath = reducer.reduce(mixed, apply_breath_suppression=False)
+
+        with_hf = np.mean(np.diff(with_breath[start:end]) ** 2)
+        without_hf = np.mean(np.diff(without_breath[start:end]) ** 2)
+        assert with_hf < without_hf * 0.95

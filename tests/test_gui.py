@@ -62,3 +62,7 @@ def test_output_format_selection_updates_output_extension():
 
 def test_output_formats_include_mp3():
     assert "mp3" in OUTPUT_FORMATS
+
+
+def test_suggest_output_path_defaults_to_mp3_extension():
+    assert _suggest_output_path("/tmp/song.wav", "mp3") == "/tmp/song_output.mp3"

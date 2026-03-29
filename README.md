@@ -53,10 +53,16 @@ python gui.py
 
 ```bash
 # 自动降噪 / Auto noise removal
-music-editor denoise input.wav output.wav
+music-editor denoise input.wav output.mp3
 
 # 用户选取噪音片段（前3秒为纯噪音）/ User noise segment (first 3s is ambient noise)
-music-editor denoise input.wav output.wav --noise-start 0 --noise-end 3
+music-editor denoise input.wav output.mp3 --noise-start 0 --noise-end 3
+
+# 调整换气音抑制强度 / Tune breath suppression strength
+music-editor denoise input.wav output.mp3 --breath-reduce-strength 0.5
+
+# 仅降环境噪音，不抑制换气音 / Disable breath suppression
+music-editor denoise input.wav output.mp3 --no-breath-remove
 
 # 音量归一化 / Volume normalization
 music-editor normalize input.wav output.wav
@@ -97,8 +103,8 @@ music-editor fade-out input.wav output.wav --duration 2
 
 支持的格式 / Supported formats: WAV, FLAC, OGG, MP3, M4A, AAC, WMA (read), WAV, FLAC, OGG, MP3 (write).
 
-“唱歌换气音”功能位置：在图形界面 **降噪 / Noise Removal** 标签页，执行“执行降噪 / Apply Noise Removal”时会自动包含“换气音抑制（唱歌）”。
-Where to find “breath suppression for singing”: in the GUI **降噪 / Noise Removal** tab. It is applied automatically when running **执行降噪 / Apply Noise Removal**.
+“唱歌换气音”功能位置：在图形界面 **降噪 / Noise Removal** 标签页，可通过“抑制换气音 / Suppress breath sounds”独立开关控制，并可用“换气音抑制强度 / Breath strength”细调。
+Where to find “breath suppression for singing”: in the GUI **降噪 / Noise Removal** tab. It is controlled by an independent “Suppress breath sounds” toggle and a dedicated breath-strength control.
 
 ---
 

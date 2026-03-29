@@ -71,7 +71,11 @@ def main(args=None):
 
 def _cmd_denoise(ns):
     audio, sr = load_audio(ns.input)
-    reducer = NoiseReducer(sr, prop_decrease=ns.prop_decrease)
+    reducer = NoiseReducer(
+        sr,
+        prop_decrease=ns.prop_decrease,
+        breath_reduce_strength=ns.breath_reduce_strength,
+    )
 
     if ns.noise_start is not None and ns.noise_end is not None:
         print(
@@ -83,7 +87,7 @@ def _cmd_denoise(ns):
         reducer.detect_and_set_noise_profile(audio)
 
     print("Reducing noise …")
-    result = reducer.reduce(audio)
+    result = reducer.reduce(audio, apply_breath_suppression=not ns.no_breath_remove)
     save_audio(ns.output, result, sr)
     print(f"Saved → {ns.output}")
 
@@ -229,6 +233,18 @@ def _build_parser() -> argparse.ArgumentParser:
         default=1.0,
         metavar="0-1",
         help="Proportion of noise to remove (default 1.0)",
+    )
+    sp.add_argument(
+        "--breath-reduce-strength",
+        type=float,
+        default=0.35,
+        metavar="0-1",
+        help="Breath suppression strength (default 0.35)",
+    )
+    sp.add_argument(
+        "--no-breath-remove",
+        action="store_true",
+        help="Disable breath-sound suppression",
     )
     sp.set_defaults(func=_cmd_denoise)
 
