@@ -32,6 +32,7 @@ _BREATH_MIN_FLATNESS = 0.18
 _BREATH_MIN_HIGH_RATIO = 0.08
 _BREATH_MAX_LOW_RATIO = 0.92
 _BREATH_MAX_PEAKINESS = 140.0
+_BREATH_METHODS = {"attenuate", "high_band", "hybrid"}
 
 
 class NoiseReducer:
@@ -58,12 +59,20 @@ class NoiseReducer:
         n_fft: int = 2048,
         hop_length: int | None = None,
         breath_reduce_strength: float = 0.35,
+        breath_method: str = "hybrid",
+        breath_sensitivity: float = 0.5,
+        breath_band_focus: float = 0.65,
     ):
         self.sample_rate = sample_rate
         self.prop_decrease = float(np.clip(prop_decrease, 0.0, 1.0))
         self.n_fft = n_fft
         self.hop_length = hop_length if hop_length is not None else n_fft // 4
         self.breath_reduce_strength = float(np.clip(breath_reduce_strength, 0.0, 1.0))
+        self.breath_method = (
+            breath_method if breath_method in _BREATH_METHODS else "hybrid"
+        )
+        self.breath_sensitivity = float(np.clip(breath_sensitivity, 0.0, 1.0))
+        self.breath_band_focus = float(np.clip(breath_band_focus, 0.0, 1.0))
         self._noise_profile: np.ndarray | None = None
 
     def _effective_fft_params(self, n_samples: int) -> tuple[int, int]:
@@ -176,6 +185,17 @@ class NoiseReducer:
         if not apply_breath_suppression:
             return reduced
         return self._suppress_breath_sounds(reduced)
+
+    def suppress_breath_sounds(self, audio: np.ndarray) -> np.ndarray:
+        """
+        Suppress breath sounds without running denoise first.
+        """
+        if audio.ndim == 2:
+            channels = [
+                self._suppress_breath_sounds(audio[:, ch]) for ch in range(audio.shape[1])
+            ]
+            return np.stack(channels, axis=1)
+        return self._suppress_breath_sounds(audio)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -351,8 +371,11 @@ class NoiseReducer:
 
         eps = 1e-10
         frame_energy = np.mean(mag ** 2, axis=0)
-        energy_low = np.percentile(frame_energy, 15)
-        energy_high = np.percentile(frame_energy, 85)
+        sensitivity = self.breath_sensitivity
+        low_pct = float(np.clip(20.0 - 10.0 * sensitivity, 5.0, 30.0))
+        high_pct = float(np.clip(80.0 + 10.0 * sensitivity, 70.0, 95.0))
+        energy_low = np.percentile(frame_energy, low_pct)
+        energy_high = np.percentile(frame_energy, high_pct)
         if energy_high <= 0:
             return audio.astype(np.float32, copy=False)
 
@@ -371,22 +394,54 @@ class NoiseReducer:
         high_ratio = np.sum(mag[high_mask] ** 2, axis=0) / total_energy
 
         peakiness = np.max(mag_eps, axis=0) / mean_mag
+        flatness_threshold = _BREATH_MIN_FLATNESS * (1.15 - 0.5 * sensitivity)
+        high_ratio_threshold = _BREATH_MIN_HIGH_RATIO * (1.2 - 0.6 * sensitivity)
+        low_ratio_threshold = _BREATH_MAX_LOW_RATIO - 0.08 * sensitivity
+        peakiness_threshold = _BREATH_MAX_PEAKINESS * (1.15 - 0.5 * sensitivity)
 
         breath_like = (
             (frame_energy >= energy_low)
             & (frame_energy <= energy_high)
-            & (flatness > _BREATH_MIN_FLATNESS)
-            & (high_ratio > _BREATH_MIN_HIGH_RATIO)
-            & (low_ratio < _BREATH_MAX_LOW_RATIO)
-            & (peakiness < _BREATH_MAX_PEAKINESS)
+            & (flatness > flatness_threshold)
+            & (high_ratio > high_ratio_threshold)
+            & (low_ratio < low_ratio_threshold)
+            & (peakiness < peakiness_threshold)
         )
         if not np.any(breath_like):
             return audio.astype(np.float32, copy=False)
 
         mask = breath_like.astype(np.float32)
-        mask = uniform_filter1d(mask, size=3, mode="nearest")
-        attenuation = 1.0 - self.breath_reduce_strength * np.clip(mask, 0.0, 1.0)
-        zxx_clean = zxx * attenuation[np.newaxis, :]
+        smooth_size = int(3 + 4 * sensitivity)
+        if smooth_size % 2 == 0:
+            smooth_size += 1
+        mask = uniform_filter1d(mask, size=max(3, smooth_size), mode="nearest")
+        mask = np.clip(mask, 0.0, 1.0)
+
+        strength = self.breath_reduce_strength
+        band_focus = self.breath_band_focus
+        min_gain = 1.0 - 0.9 * strength
+        frame_gain = np.clip(
+            1.0 - strength * (1.0 - band_focus) * mask,
+            min_gain,
+            1.0,
+        )
+        high_band_gain = np.clip(1.0 - strength * mask, min_gain, 1.0)
+        gain = np.tile(frame_gain[np.newaxis, :], (zxx.shape[0], 1))
+
+        if self.breath_method == "attenuate":
+            gain = np.clip(1.0 - strength * mask, min_gain, 1.0)[np.newaxis, :]
+        elif self.breath_method == "high_band":
+            gain[high_mask, :] = np.minimum(gain[high_mask, :], high_band_gain)
+        else:  # hybrid
+            blended = np.clip(
+                1.0 - strength * (0.35 + 0.65 * band_focus) * mask,
+                min_gain,
+                1.0,
+            )
+            gain = np.minimum(gain, blended[np.newaxis, :])
+            gain[high_mask, :] = np.minimum(gain[high_mask, :], high_band_gain)
+
+        zxx_clean = zxx * gain
         _, cleaned = istft(
             zxx_clean,
             fs=self.sample_rate,

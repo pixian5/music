@@ -58,11 +58,8 @@ music-editor denoise input.wav output.mp3
 # 用户选取噪音片段（前3秒为纯噪音）/ User noise segment (first 3s is ambient noise)
 music-editor denoise input.wav output.mp3 --noise-start 0 --noise-end 3
 
-# 调整换气音抑制强度 / Tune breath suppression strength
-music-editor denoise input.wav output.mp3 --breath-reduce-strength 0.5
-
-# 仅降环境噪音，不抑制换气音 / Disable breath suppression
-music-editor denoise input.wav output.mp3 --no-breath-remove
+# 换气音抑制（独立命令）/ Breath suppression (standalone command)
+music-editor suppress-breath input.wav output.mp3 --strength 0.5 --method hybrid
 
 # 音量归一化 / Volume normalization
 music-editor normalize input.wav output.wav
@@ -103,8 +100,8 @@ music-editor fade-out input.wav output.wav --duration 2
 
 支持的格式 / Supported formats: WAV, FLAC, OGG, MP3, M4A, AAC, WMA (read), WAV, FLAC, OGG, MP3 (write).
 
-“唱歌换气音”功能位置：在图形界面 **降噪 / Noise Removal** 标签页，可通过“抑制换气音 / Suppress breath sounds”独立开关控制，并可用“换气音抑制强度 / Breath strength”细调。
-Where to find “breath suppression for singing”: in the GUI **降噪 / Noise Removal** tab. It is controlled by an independent “Suppress breath sounds” toggle and a dedicated breath-strength control.
+“唱歌换气音”功能位置：在图形界面最前面的 **换气音抑制 / Breath** 标签页，提供独立开关、抑制方法（hybrid / attenuate / high_band）、抑制强度、检测灵敏度和高频重点的细粒度控制。
+Where to find “breath suppression for singing”: the first GUI tab is **换气音抑制 / Breath**, with independent toggle, method selection (hybrid / attenuate / high_band), strength, sensitivity, and high-band focus controls.
 
 ---
 
