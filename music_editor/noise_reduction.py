@@ -609,13 +609,13 @@ class NoiseReducer:
         # in cases where spectral attenuation alone still leaves audible breaths.
         if np.any(breath_frames):
             if extreme_mode:
-                segment_factor = 1.0
+                segment_factor = 1.18
             elif ultra_mode:
-                segment_factor = 0.72
+                segment_factor = 0.88
             elif self.breath_method == "deep":
-                segment_factor = 0.58
+                segment_factor = 0.72
             else:
-                segment_factor = 0.35
+                segment_factor = 0.46
             out = self._apply_breath_segment_ducking(
                 out,
                 breath_gain=breath_gain,
@@ -643,18 +643,18 @@ class NoiseReducer:
         sample_gain = np.interp(sample_x, frame_x, breath_gain.astype(np.float32))
 
         inhale_strength = np.clip(1.0 - sample_gain, 0.0, 1.0)
-        duck_gain = 1.0 - inhale_strength * float(np.clip(segment_factor, 0.0, 1.0))
+        duck_gain = 1.0 - inhale_strength * float(np.clip(segment_factor, 0.0, 1.3))
         # Make ducking curve steeper on likely inhale regions so residual peak-like
         # pulses are reduced more than surrounding speech/singing frames.
-        duck_gain = np.power(duck_gain, 1.22).astype(np.float32)
+        duck_gain = np.power(duck_gain, 1.45).astype(np.float32)
         smooth = max(int(0.016 * self.sample_rate), 16)
         kernel = np.ones(smooth, dtype=np.float32) / smooth
         duck_gain = np.convolve(duck_gain, kernel, mode="same")
-        duck_gain = np.clip(duck_gain, 0.01, 1.0)
+        duck_gain = np.clip(duck_gain, 0.005, 1.0)
 
         # Peak-aware cap in inhale-heavy samples: if envelope still spikes after
         # ducking, force additional local attenuation to avoid obvious peaks.
-        target_peak = 1.0 - 0.993 * inhale_strength
+        target_peak = 1.0 - 0.997 * inhale_strength
         abs_audio = np.abs(audio.astype(np.float32))
         allowed = np.maximum(target_peak, 0.008)
         peak_cap = np.minimum(1.0, allowed / (abs_audio + 1e-8))
@@ -663,7 +663,7 @@ class NoiseReducer:
 
         # Second-stage local peak limiter for inhale-heavy samples: this keeps
         # short "mountain-like" pulses clearly below surrounding voiced peaks.
-        inhale_mask = inhale_strength > 0.08
+        inhale_mask = inhale_strength > 0.05
         if np.any(inhale_mask):
             abs_out = np.abs(out)
             non_inhale = abs_out[~inhale_mask]
@@ -671,13 +671,13 @@ class NoiseReducer:
                 speech_ref_peak = float(np.quantile(non_inhale, 0.72))
             else:
                 speech_ref_peak = float(np.quantile(abs_out, 0.60))
-            inhale_peak_cap = max(0.005, speech_ref_peak * 0.30)
+            inhale_peak_cap = max(0.003, speech_ref_peak * 0.22)
             limiter_gain = np.ones_like(out, dtype=np.float32)
             inhale_abs = abs_out[inhale_mask]
             over_ratio = inhale_abs / (inhale_peak_cap + 1e-8)
             limiter_gain_inhale = np.where(
                 over_ratio > 1.0,
-                np.power(over_ratio, -0.92),
+                np.power(over_ratio, -1.08),
                 1.0,
             ).astype(np.float32)
             limiter_gain[inhale_mask] = limiter_gain_inhale
@@ -685,8 +685,8 @@ class NoiseReducer:
             out = (out * limiter_gain.astype(np.float32)).astype(np.float32)
             # Final inhale-frame duck: ensure inhale sections are audibly lower
             # than normal singing/speech even when residual wideband energy remains.
-            final_duck = 1.0 - 0.94 * inhale_strength
-            final_duck = np.clip(final_duck, 0.03, 1.0).astype(np.float32)
+            final_duck = 1.0 - 0.975 * inhale_strength
+            final_duck = np.clip(final_duck, 0.015, 1.0).astype(np.float32)
             out = (out * final_duck).astype(np.float32)
         return out.astype(np.float32)
 
