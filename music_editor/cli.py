@@ -257,29 +257,29 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--strength",
         type=float,
-        default=0.35,
+        default=1.0,
         metavar="0-1",
-        help="Breath suppression strength (default 0.35)",
+        help="Breath suppression strength (default 1.0)",
     )
     sp.add_argument(
         "--method",
         choices=["extreme", "ultra", "deep", "hybrid", "attenuate", "high_band"],
-        default="hybrid",
+        default="extreme",
         help="Breath suppression method (extreme is strongest, then ultra/deep)",
     )
     sp.add_argument(
         "--sensitivity",
         type=float,
-        default=0.5,
+        default=1.0,
         metavar="0-1",
-        help="Breath detection sensitivity (default 0.5)",
+        help="Breath detection sensitivity (default 1.0)",
     )
     sp.add_argument(
         "--band-focus",
         type=float,
-        default=0.65,
+        default=1.0,
         metavar="0-1",
-        help="How strongly high-band attenuation is focused (default 0.65)",
+        help="How strongly high-band attenuation is focused (default 1.0)",
     )
     sp.set_defaults(func=_cmd_suppress_breath)
 

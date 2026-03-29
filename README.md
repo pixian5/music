@@ -49,6 +49,9 @@ pip install -e .
 python gui.py
 ```
 
+> macOS 前台启动说明 / macOS foreground launch  
+> 请直接在前台运行 `python gui.py`（不要加 `&`）。程序会尝试自动置顶窗口；若仍未置顶，请点击 Dock 中的 Python 图标切回前台。
+
 ### 命令行 / Command-Line Interface (CLI)
 
 ```bash
@@ -101,9 +104,9 @@ music-editor fade-out input.wav output.wav --duration 2
 支持的格式 / Supported formats: WAV, FLAC, OGG, MP3, M4A, AAC, WMA (read), WAV, FLAC, OGG, MP3 (write).
 
 “唱歌换气音”功能位置：在图形界面最前面的 **换气音抑制 / Breath** 标签页，提供独立开关、抑制方法（ultra / deep / hybrid / attenuate / high_band）、抑制强度、检测灵敏度和高频重点的细粒度控制。  
-建议参数（换气音明显时）：`method=deep, strength>=0.75, sensitivity>=0.75, high-band focus>=0.80`；若仍明显，改为 `method=ultra` 并将其余参数提高到 `0.85+`。
+建议参数（换气音明显时）：`method=deep, strength>=75, sensitivity>=75, high-band focus>=80`；若仍明显，改为 `method=ultra` 并将其余参数提高到 `85+`（GUI 为 0–100 刻度）。
 Where to find “breath suppression for singing”: the first GUI tab is **换气音抑制 / Breath**, with independent toggle, method selection (ultra / deep / hybrid / attenuate / high_band), strength, sensitivity, and high-band focus controls.  
-Suggested stronger settings (for obvious inhales): `method=deep, strength>=0.75, sensitivity>=0.75, high-band focus>=0.80`; if still obvious, switch to `method=ultra` and raise other parameters to `0.85+`.
+Suggested stronger settings (for obvious inhales): `method=deep, strength>=75, sensitivity>=75, high-band focus>=80`; if still obvious, switch to `method=ultra` and raise others to `85+` (GUI uses a 0–100 scale).
 
 ---
 
