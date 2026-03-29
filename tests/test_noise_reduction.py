@@ -283,3 +283,38 @@ class TestNoiseReducer:
 
         assert head_rms_out > head_rms_in * 0.8
         assert tail_rms_out > tail_rms_in * 0.8
+
+    def test_breath_detection_prefers_obvious_volume_contrast(self):
+        rng = np.random.default_rng(99)
+        n = SR * 2
+        t = np.linspace(0, 2.0, n, endpoint=False)
+        voice = (0.16 * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+
+        hiss = (rng.standard_normal(n).astype(np.float32) * 0.016)
+        hiss = hiss - np.convolve(hiss, np.ones(7) / 7.0, mode="same")
+
+        burst_mask = np.zeros(n, dtype=np.float32)
+        burst_mask[int(0.68 * SR): int(0.82 * SR)] = 1.0
+        # Keep a weak continuous hiss in both signals so only local contrast differs.
+        burst_audio = (voice + hiss * (0.24 + 2.1 * burst_mask)).astype(np.float32)
+        flat_audio = (voice + hiss * 0.46).astype(np.float32)
+
+        reducer = NoiseReducer(
+            SR,
+            breath_suppression=1.0,
+            breath_reduce_strength=0.92,
+            breath_method="extreme",
+            breath_sensitivity=0.9,
+            breath_band_focus=0.95,
+        )
+        burst_out = reducer.suppress_breath_sounds(burst_audio)
+        flat_out = reducer.suppress_breath_sounds(flat_audio)
+
+        burst_region = burst_mask > 0
+        burst_drop = np.sqrt(np.mean(burst_audio[burst_region] ** 2)) - np.sqrt(
+            np.mean(burst_out[burst_region] ** 2)
+        )
+        flat_drop = np.sqrt(np.mean(flat_audio[burst_region] ** 2)) - np.sqrt(
+            np.mean(flat_out[burst_region] ** 2)
+        )
+        assert burst_drop > flat_drop * 1.08

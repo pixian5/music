@@ -46,6 +46,10 @@ _BREATH_SENS_PEAKINESS_BASE = 1.15
 _BREATH_SENS_PEAKINESS_SPAN = 0.5
 _BREATH_SENS_CREST_BASE = 1.18
 _BREATH_SENS_CREST_SPAN = 0.42
+_BREATH_SENS_CONTRAST_BASE_DB = 5.4
+_BREATH_SENS_CONTRAST_SPAN_DB = 2.6
+_BREATH_SENS_RISE_BASE_DB = 2.8
+_BREATH_SENS_RISE_SPAN_DB = 1.8
 _BREATH_HYBRID_FRAME_WEIGHT = 0.35
 _BREATH_HYBRID_BAND_WEIGHT = 0.65
 
@@ -472,12 +476,31 @@ class NoiseReducer:
         high_energy_th = np.quantile(frame_energy, energy_high_percentile / 100.0)
         quiet_frames = frame_energy <= low_energy_th
         loud_frames = frame_energy >= high_energy_th
+        # Inhales are often a local "hiss bump": clearly louder than nearby
+        # context, with an audible jump from previous frames and drop after.
+        local_window = 7 if extreme_mode else (9 if ultra_mode else 11)
+        local_energy = uniform_filter1d(frame_energy, size=local_window, mode="nearest")
+        prev_energy = np.roll(local_energy, 1)
+        next_energy = np.roll(local_energy, -1)
+        prev_energy[0] = local_energy[0]
+        next_energy[-1] = local_energy[-1]
+        local_contrast_db = frame_energy - local_energy
+        rise_db = frame_energy - prev_energy
+        fall_db = frame_energy - next_energy
+        contrast_th = _BREATH_SENS_CONTRAST_BASE_DB - _BREATH_SENS_CONTRAST_SPAN_DB * sens
+        rise_th = _BREATH_SENS_RISE_BASE_DB - _BREATH_SENS_RISE_SPAN_DB * sens
+        has_volume_contrast = (
+            (local_contrast_db > contrast_th)
+            & (rise_db > rise_th)
+            & (fall_db > rise_th * (0.75 if extreme_mode else 0.9))
+        )
         breath_frames = (
             (hi_ratio > ratio_th)
             & (hi_flatness > flat_th)
             & (lo_ratio < low_ratio_th)
             & (peakiness < peak_th)
             & (lo_crest < crest_th)
+            & (has_volume_contrast | quiet_frames)
         )
         speech_like_frames = (lo_crest >= crest_th) & (lo_ratio > np.minimum(0.98, low_ratio_th * 1.03))
         if very_aggressive:
@@ -487,7 +510,7 @@ class NoiseReducer:
                 & (hi_flatness > flat_th * (0.62 if extreme_mode else (0.7 if ultra_mode else 0.78)))
                 & (lo_ratio < min(0.96, low_ratio_th * 1.04))
                 & (lo_crest < crest_th * (1.03 if extreme_mode else 1.0))
-                & quiet_frames
+                & (quiet_frames | has_volume_contrast)
             )
             breath_frames = breath_frames | relaxed_frames
         breath_frames = breath_frames & (~speech_like_frames)
