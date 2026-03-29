@@ -156,3 +156,33 @@ class TestNoiseReducer:
         weak_hi = np.mean(np.abs(np.fft.rfft(weak))[3500:])
         strong_hi = np.mean(np.abs(np.fft.rfft(strong))[3500:])
         assert strong_hi < weak_hi * 0.85
+
+    def test_ultra_method_reduces_quiet_inhale_more_than_deep(self):
+        rng = np.random.default_rng(11)
+        n = SR
+        t = np.linspace(0, 1.0, n, endpoint=False)
+        tone = 0.22 * np.sin(2 * np.pi * 210 * t).astype(np.float32)
+        breath = (rng.standard_normal(n).astype(np.float32) * 0.022)
+        breath = breath - np.convolve(breath, np.ones(9) / 9.0, mode="same")
+        audio = (tone + breath).astype(np.float32)
+
+        deep = NoiseReducer(
+            SR,
+            breath_suppression=1.0,
+            breath_reduce_strength=0.85,
+            breath_method="deep",
+            breath_sensitivity=0.85,
+            breath_band_focus=0.9,
+        ).suppress_breath_sounds(audio)
+        ultra = NoiseReducer(
+            SR,
+            breath_suppression=1.0,
+            breath_reduce_strength=0.85,
+            breath_method="ultra",
+            breath_sensitivity=0.85,
+            breath_band_focus=0.9,
+        ).suppress_breath_sounds(audio)
+
+        deep_hi = np.mean(np.abs(np.fft.rfft(deep))[3000:])
+        ultra_hi = np.mean(np.abs(np.fft.rfft(ultra))[3000:])
+        assert ultra_hi < deep_hi * 0.9

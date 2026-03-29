@@ -12,8 +12,8 @@ A music editing application with noise removal and a rich set of audio effects.
   **Auto-detect** – automatically finds the quietest frames as the noise reference.
 - **用户选取片段** – 用户指定某段纯噪音区间（秒），程序以此为基准在整段音频中去除类似噪音  
   **User segment** – user specifies a time range containing only ambient noise; that profile is subtracted from the entire recording.
-- **换气音抑制（唱歌）** – 在降噪后使用频谱平坦度、频带能量比例与峰值特征，自适应削弱换气噪声；新增 `deep` 强抑制模式用于明显吸气声  
-  **Breath suppression (singing)** – after denoise, adaptively attenuates likely breath sounds using spectral flatness, band-energy ratio and peakiness features; includes a new stronger `deep` mode for obvious inhales.
+- **换气音抑制（唱歌）** – 在降噪后使用频谱平坦度、频带能量比例、帧能量与峰值特征，自适应削弱换气噪声；支持 `deep / ultra` 强抑制模式用于明显吸气声  
+  **Breath suppression (singing)** – after denoise, adaptively attenuates likely breath sounds using spectral flatness, band-energy ratio, frame energy and peakiness features; supports stronger `deep / ultra` modes for obvious inhales.
 
 ### 声音效果 / Audio Effects
 | 效果 | 说明 |
@@ -59,7 +59,7 @@ music-editor denoise input.wav output.mp3
 music-editor denoise input.wav output.mp3 --noise-start 0 --noise-end 3
 
 # 换气音抑制（独立命令）/ Breath suppression (standalone command)
-music-editor suppress-breath input.wav output.mp3 --strength 0.8 --sensitivity 0.8 --band-focus 0.85 --method deep
+music-editor suppress-breath input.wav output.mp3 --strength 0.85 --sensitivity 0.85 --band-focus 0.9 --method ultra
 
 # 音量归一化 / Volume normalization
 music-editor normalize input.wav output.wav
@@ -100,10 +100,10 @@ music-editor fade-out input.wav output.wav --duration 2
 
 支持的格式 / Supported formats: WAV, FLAC, OGG, MP3, M4A, AAC, WMA (read), WAV, FLAC, OGG, MP3 (write).
 
-“唱歌换气音”功能位置：在图形界面最前面的 **换气音抑制 / Breath** 标签页，提供独立开关、抑制方法（deep / hybrid / attenuate / high_band）、抑制强度、检测灵敏度和高频重点的细粒度控制。  
-建议参数（换气音明显时）：`method=deep, strength>=0.75, sensitivity>=0.75, high-band focus>=0.80`。
-Where to find “breath suppression for singing”: the first GUI tab is **换气音抑制 / Breath**, with independent toggle, method selection (deep / hybrid / attenuate / high_band), strength, sensitivity, and high-band focus controls.  
-Suggested stronger settings (for obvious inhales): `method=deep, strength>=0.75, sensitivity>=0.75, high-band focus>=0.80`.
+“唱歌换气音”功能位置：在图形界面最前面的 **换气音抑制 / Breath** 标签页，提供独立开关、抑制方法（ultra / deep / hybrid / attenuate / high_band）、抑制强度、检测灵敏度和高频重点的细粒度控制。  
+建议参数（换气音明显时）：`method=deep, strength>=0.75, sensitivity>=0.75, high-band focus>=0.80`；若仍明显，改为 `method=ultra` 并将其余参数提高到 `0.85+`。
+Where to find “breath suppression for singing”: the first GUI tab is **换气音抑制 / Breath**, with independent toggle, method selection (ultra / deep / hybrid / attenuate / high_band), strength, sensitivity, and high-band focus controls.  
+Suggested stronger settings (for obvious inhales): `method=deep, strength>=0.75, sensitivity>=0.75, high-band focus>=0.80`; if still obvious, switch to `method=ultra` and raise other parameters to `0.85+`.
 
 ---
 
