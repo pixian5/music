@@ -186,3 +186,33 @@ class TestNoiseReducer:
         deep_hi = np.mean(np.abs(np.fft.rfft(deep))[3000:])
         ultra_hi = np.mean(np.abs(np.fft.rfft(ultra))[3000:])
         assert ultra_hi < deep_hi * 0.9
+
+    def test_extreme_method_reduces_residual_hiss_more_than_ultra(self):
+        rng = np.random.default_rng(21)
+        n = SR
+        t = np.linspace(0, 1.0, n, endpoint=False)
+        tone = 0.2 * np.sin(2 * np.pi * 200 * t).astype(np.float32)
+        breath = (rng.standard_normal(n).astype(np.float32) * 0.028)
+        breath = breath - np.convolve(breath, np.ones(11) / 11.0, mode="same")
+        audio = (tone + breath).astype(np.float32)
+
+        ultra = NoiseReducer(
+            SR,
+            breath_suppression=1.0,
+            breath_reduce_strength=0.92,
+            breath_method="ultra",
+            breath_sensitivity=0.9,
+            breath_band_focus=0.92,
+        ).suppress_breath_sounds(audio)
+        extreme = NoiseReducer(
+            SR,
+            breath_suppression=1.0,
+            breath_reduce_strength=0.92,
+            breath_method="extreme",
+            breath_sensitivity=0.9,
+            breath_band_focus=0.92,
+        ).suppress_breath_sounds(audio)
+
+        ultra_hi = np.mean(np.abs(np.fft.rfft(ultra))[3000:])
+        extreme_hi = np.mean(np.abs(np.fft.rfft(extreme))[3000:])
+        assert extreme_hi < ultra_hi * 0.93

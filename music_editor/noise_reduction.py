@@ -32,7 +32,7 @@ _BREATH_MIN_FLATNESS = 0.16
 _BREATH_MIN_HIGH_RATIO = 0.06
 _BREATH_MAX_LOW_RATIO = 0.94
 _BREATH_MAX_PEAKINESS = 170.0
-_BREATH_METHODS = {"attenuate", "high_band", "hybrid", "deep", "ultra"}
+_BREATH_METHODS = {"attenuate", "high_band", "hybrid", "deep", "ultra", "extreme"}
 _BREATH_SENS_ENERGY_LOW_BASE = 20.0
 _BREATH_SENS_ENERGY_LOW_SPAN = 10.0
 _BREATH_SENS_ENERGY_HIGH_BASE = 80.0
@@ -401,11 +401,17 @@ class NoiseReducer:
         mag = np.abs(zxx)
         phase = np.angle(zxx)
 
-        # Method-dependent analysis bands. deep/ultra are intentionally more aggressive.
-        very_aggressive = self.breath_method in {"deep", "ultra"}
+        # Method-dependent analysis bands. deep/ultra/extreme are intentionally
+        # more aggressive.
+        very_aggressive = self.breath_method in {"deep", "ultra", "extreme"}
         ultra_mode = self.breath_method == "ultra"
-        hi_start = 2000.0 if ultra_mode else (2400.0 if very_aggressive else 3000.0)
-        lo_end = 1700.0 if ultra_mode else (1500.0 if very_aggressive else 1300.0)
+        extreme_mode = self.breath_method == "extreme"
+        hi_start = 1700.0 if extreme_mode else (
+            2000.0 if ultra_mode else (2400.0 if very_aggressive else 3000.0)
+        )
+        lo_end = 1800.0 if extreme_mode else (
+            1700.0 if ultra_mode else (1500.0 if very_aggressive else 1300.0)
+        )
         hi_mask = freqs >= hi_start
         lo_mask = (freqs >= 100.0) & (freqs <= lo_end)
         mid_mask = (freqs >= 1200.0) & (freqs <= 3200.0)
@@ -465,15 +471,15 @@ class NoiseReducer:
         if very_aggressive:
             # Deep/ultra: for weak but annoying inhales, allow lower flatness bar on quiet frames.
             relaxed_frames = (
-                (hi_ratio > ratio_th * (0.82 if ultra_mode else 0.88))
-                & (hi_flatness > flat_th * (0.7 if ultra_mode else 0.78))
+                (hi_ratio > ratio_th * (0.76 if extreme_mode else (0.82 if ultra_mode else 0.88)))
+                & (hi_flatness > flat_th * (0.62 if extreme_mode else (0.7 if ultra_mode else 0.78)))
                 & (lo_ratio < min(0.96, low_ratio_th * 1.04))
                 & quiet_frames
             )
             breath_frames = breath_frames | relaxed_frames
         if not np.any(breath_frames):
-            if ultra_mode:
-                surrogate = (hi_ratio > ratio_th * 0.65) & quiet_frames
+            if ultra_mode or extreme_mode:
+                surrogate = (hi_ratio > ratio_th * (0.55 if extreme_mode else 0.65)) & quiet_frames
                 if np.any(surrogate):
                     breath_frames = surrogate
                 else:
@@ -505,13 +511,13 @@ class NoiseReducer:
             1.0,
         )
         breath_gain[breath_frames] = 1.0 - reduction[breath_frames]
-        if ultra_mode:
+        if ultra_mode or extreme_mode:
             # Ultra mode: extra attenuation on low-energy hiss-like frames.
-            ultra_mask = breath_frames | ((hi_ratio > ratio_th * 0.75) & quiet_frames)
-            ultra_extra = strength * (0.20 + 0.35 * sens)
+            ultra_mask = breath_frames | ((hi_ratio > ratio_th * (0.62 if extreme_mode else 0.75)) & quiet_frames)
+            ultra_extra = strength * ((0.28 + 0.42 * sens) if extreme_mode else (0.20 + 0.35 * sens))
             breath_gain[ultra_mask] *= (1.0 - ultra_extra)
 
-        smooth_size = 15 if ultra_mode else (11 if self.breath_method == "deep" else 7)
+        smooth_size = 19 if extreme_mode else (15 if ultra_mode else (11 if self.breath_method == "deep" else 7))
         breath_gain = uniform_filter1d(breath_gain, size=smooth_size, mode="nearest")
         breath_gain = np.clip(breath_gain, 1.0 - strength, 1.0)
 
@@ -520,28 +526,35 @@ class NoiseReducer:
         gain_2d = np.ones_like(mag, dtype=np.float32)
         hi_freqs = freqs[hi_mask]
         focus = 0.4 + 0.6 * self.breath_band_focus
-        denom = 3000.0 if ultra_mode else (3600.0 if self.breath_method == "deep" else 4200.0)
+        denom = 2600.0 if extreme_mode else (3000.0 if ultra_mode else (3600.0 if self.breath_method == "deep" else 4200.0))
         freq_weight = np.clip((hi_freqs - hi_start) / denom, 0.0, 1.0).astype(np.float32)
         weighted_gain = 1.0 - (1.0 - breath_gain[np.newaxis, :]) * (
             (1.0 - focus) + focus * freq_weight[:, np.newaxis]
         )
         gain_2d[hi_mask, :] = np.clip(weighted_gain, 1.0 - strength, 1.0)
 
-        if self.breath_method in {"hybrid", "deep", "ultra"} and np.any(mid_mask):
+        if self.breath_method in {"hybrid", "deep", "ultra", "extreme"} and np.any(mid_mask):
             # Mild attenuation in upper-mid frication band to reduce residual breath.
-            mid_floor = 0.18 + 0.25 * float(self.breath_method == "deep") + 0.18 * float(ultra_mode)
+            mid_floor = (
+                0.18
+                + 0.25 * float(self.breath_method == "deep")
+                + 0.18 * float(ultra_mode)
+                + 0.34 * float(extreme_mode)
+            )
             mid_gain = 1.0 - (1.0 - breath_gain[np.newaxis, :]) * mid_floor
             gain_2d[mid_mask, :] = np.minimum(gain_2d[mid_mask, :], mid_gain)
 
-        if ultra_mode:
+        if ultra_mode or extreme_mode:
             # Ultra mode: frame-level ducking to remove small inhale residue.
-            global_duck = 1.0 - (1.0 - breath_gain)[np.newaxis, :] * (0.22 + 0.22 * sens)
+            global_duck = 1.0 - (1.0 - breath_gain)[np.newaxis, :] * (
+                (0.34 + 0.28 * sens) if extreme_mode else (0.22 + 0.22 * sens)
+            )
             gain_2d = np.minimum(gain_2d, global_duck.astype(np.float32))
 
         # For detected breath frames, estimate a residual hiss floor and subtract a portion.
         breath_floor = np.median(hi_mag[:, breath_frames], axis=1, keepdims=True)
         if breath_floor.size > 0:
-            floor_base = 0.52 if ultra_mode else (0.42 if self.breath_method == "deep" else 0.3)
+            floor_base = 0.64 if extreme_mode else (0.52 if ultra_mode else (0.42 if self.breath_method == "deep" else 0.3))
             reduction_floor = strength * floor_base
             hi_mag_clean = np.maximum(
                 hi_mag * gain_2d[hi_mask, :] - reduction_floor * breath_floor,
@@ -551,6 +564,16 @@ class NoiseReducer:
             mag_clean[hi_mask, :] = hi_mag_clean
         else:
             mag_clean = mag * gain_2d
+
+        if extreme_mode:
+            # Second-stage spectral floor suppression:
+            # estimate a broad high-band hiss floor and remove a controlled amount.
+            hi_floor = np.quantile(mag_clean[hi_mask, :], 0.35, axis=1, keepdims=True)
+            extra_floor = strength * (0.34 + 0.30 * sens)
+            mag_clean[hi_mask, :] = np.maximum(
+                mag_clean[hi_mask, :] - extra_floor * hi_floor,
+                0.0,
+            )
 
         zxx_clean = mag_clean * np.exp(1j * phase)
         _, out = istft(
