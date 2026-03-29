@@ -318,3 +318,36 @@ class TestNoiseReducer:
             np.mean(flat_out[burst_region] ** 2)
         )
         assert burst_drop > flat_drop * 1.08
+
+    def test_extreme_avoids_false_positive_on_continuous_soft_speech(self):
+        n = SR * 3
+        t = np.linspace(0, 3.0, n, endpoint=False)
+        # Continuous voiced content with a soft middle phrase (still speech-like).
+        voice = (
+            0.18 * np.sin(2 * np.pi * 210 * t)
+            + 0.06 * np.sin(2 * np.pi * 420 * t)
+        ).astype(np.float32)
+        env = np.ones(n, dtype=np.float32)
+        soft_start = int(1.15 * SR)
+        soft_end = int(1.85 * SR)
+        env[soft_start:soft_end] = 0.48
+        # Smooth transitions so it stays continuous rather than "inhale-like".
+        ramp = int(0.08 * SR)
+        env[soft_start - ramp:soft_start] = np.linspace(1.0, 0.48, ramp, dtype=np.float32)
+        env[soft_end:soft_end + ramp] = np.linspace(0.48, 1.0, ramp, dtype=np.float32)
+        audio = (voice * env).astype(np.float32)
+
+        out = NoiseReducer(
+            SR,
+            breath_suppression=1.0,
+            breath_reduce_strength=0.95,
+            breath_method="extreme",
+            breath_sensitivity=0.9,
+            breath_band_focus=0.95,
+        ).suppress_breath_sounds(audio)
+
+        region = slice(soft_start, soft_end)
+        rms_in = np.sqrt(np.mean(audio[region] ** 2))
+        rms_out = np.sqrt(np.mean(out[region] ** 2))
+        # Should preserve most of the soft speech phrase.
+        assert rms_out > rms_in * 0.84

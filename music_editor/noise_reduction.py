@@ -494,13 +494,22 @@ class NoiseReducer:
             & (rise_db > rise_th)
             & (fall_db > rise_th * (0.75 if extreme_mode else 0.9))
         )
+        quiet_gate = quiet_frames
+        if ultra_mode or extreme_mode:
+            # Reduce false positives: in aggressive modes, quietness alone is
+            # not enough; require stronger high-band evidence when no obvious
+            # discontinuity exists.
+            quiet_gate = quiet_frames & (
+                (hi_ratio > ratio_th * (0.98 if extreme_mode else 1.0))
+                & (hi_flatness > flat_th * (0.98 if extreme_mode else 1.0))
+            )
         breath_frames = (
             (hi_ratio > ratio_th)
             & (hi_flatness > flat_th)
             & (lo_ratio < low_ratio_th)
             & (peakiness < peak_th)
             & (lo_crest < crest_th)
-            & (has_volume_contrast | quiet_frames)
+            & (has_volume_contrast | quiet_gate)
         )
         speech_like_frames = (lo_crest >= crest_th) & (lo_ratio > np.minimum(0.98, low_ratio_th * 1.03))
         if very_aggressive:
@@ -814,9 +823,9 @@ class NoiseReducer:
         min_len = 1
         max_len = 16 if extreme_mode else (18 if ultra_mode else 20)
         side_ctx = 2 if extreme_mode else 3
-        min_edge_jump = 0.35 - 0.20 * sens
-        min_local_contrast = 0.45 - 0.20 * sens
-        max_peak_vs_global_db = 0.6 + 0.5 * (1.0 - sens)
+        min_edge_jump = 0.55 - 0.25 * sens
+        min_local_contrast = 0.75 - 0.30 * sens
+        max_peak_vs_global_db = -0.9 + 0.6 * (1.0 - sens)
 
         for start, end in zip(starts, ends):
             seg_len = end - start + 1
