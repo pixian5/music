@@ -192,14 +192,14 @@ class MusicEditorApp(tk.Tk):
             row=1, column=0, sticky="w", pady=(8, 0)
         )
         self._breath_method = tk.StringVar(value="hybrid")
-        breath_methods = ttk.Combobox(
+        breath_method_combo = ttk.Combobox(
             frame,
             textvariable=self._breath_method,
             values=("hybrid", "attenuate", "high_band"),
             state="readonly",
             width=16,
         )
-        breath_methods.grid(row=1, column=1, sticky="w", pady=(8, 0))
+        breath_method_combo.grid(row=1, column=1, sticky="w", pady=(8, 0))
 
         ttk.Label(frame, text="抑制强度 / Strength (0–1):").grid(
             row=2, column=0, sticky="w", pady=(8, 0)
