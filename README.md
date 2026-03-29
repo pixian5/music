@@ -95,7 +95,10 @@ music-editor fade-in input.wav output.wav --duration 2
 music-editor fade-out input.wav output.wav --duration 2
 ```
 
-支持的格式 / Supported formats: WAV, FLAC, OGG, MP3, M4A, AAC, WMA (read), WAV, FLAC, OGG (write).
+支持的格式 / Supported formats: WAV, FLAC, OGG, MP3, M4A, AAC, WMA (read), WAV, FLAC, OGG, MP3 (write).
+
+“唱歌换气音”功能位置：在图形界面 **降噪 / Noise Removal** 标签页，执行“执行降噪 / Apply Noise Removal”时会自动包含“换气音抑制（唱歌）”。
+Where to find “breath suppression for singing”: in the GUI **降噪 / Noise Removal** tab. It is applied automatically when running **执行降噪 / Apply Noise Removal**.
 
 ---
 

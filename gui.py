@@ -17,7 +17,7 @@ from music_editor.audio_io import load_audio, save_audio
 from music_editor.noise_reduction import NoiseReducer
 from music_editor.effects import AudioEffects
 
-OUTPUT_FORMATS = ("wav", "flac", "ogg")
+OUTPUT_FORMATS = ("wav", "flac", "ogg", "mp3")
 
 
 def _replace_extension(path: str, extension: str) -> str:
@@ -373,7 +373,7 @@ class MusicEditorApp(tk.Tk):
         path = filedialog.asksaveasfilename(
             title="选择输出文件 / Select output file",
             defaultextension=f".{selected_format}",
-            filetypes=[("WAV", "*.wav"), ("FLAC", "*.flac"), ("OGG", "*.ogg")],
+            filetypes=[("WAV", "*.wav"), ("FLAC", "*.flac"), ("OGG", "*.ogg"), ("MP3", "*.mp3")],
         )
         if path:
             self._output_path.set(path)
