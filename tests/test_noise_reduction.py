@@ -121,3 +121,9 @@ class TestNoiseReducer:
             return float(hi / lo)
 
         assert _band_ratio(out) < _band_ratio(audio)
+
+    def test_public_suppress_breath_sounds_api(self):
+        reducer = NoiseReducer(SR, breath_suppression=0.6)
+        x = _make_sine(freq=220.0, duration=0.2) + _make_white_noise(0.03, duration=0.2)
+        y = reducer.suppress_breath_sounds(x)
+        assert y.shape == x.shape

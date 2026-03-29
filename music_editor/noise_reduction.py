@@ -202,6 +202,21 @@ class NoiseReducer:
             reduced = self._reduce_spectral_gate(mono)
         return self._suppress_breath_noise(reduced)
 
+    def suppress_breath_sounds(self, audio: np.ndarray) -> np.ndarray:
+        """
+        Public API for breath-sound suppression.
+
+        Kept as a stable entrypoint because external callers may invoke
+        this method directly.
+        """
+        if audio.ndim == 2:
+            channels = [
+                self._suppress_breath_noise(audio[:, ch].astype(np.float32))
+                for ch in range(audio.shape[1])
+            ]
+            return np.stack(channels, axis=1)
+        return self._suppress_breath_noise(audio.astype(np.float32))
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
