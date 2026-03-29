@@ -20,6 +20,20 @@ def _make_white_noise(amplitude=0.05, duration=1.0, sr=SR, seed=0) -> np.ndarray
     return (rng.standard_normal(int(duration * sr)) * amplitude).astype(np.float32)
 
 
+def _make_breathy_noise(duration=1.0, sr=SR, amplitude=0.03, seed=123) -> np.ndarray:
+    """
+    Create a breath-like noise (high-frequency dominant and unpitched).
+    """
+    rng = np.random.default_rng(seed)
+    n = int(duration * sr)
+    white = rng.standard_normal(n).astype(np.float32)
+    # Simple high-pass by first-order difference.
+    # Prepend first sample so diff-based signal keeps original length n.
+    breath = np.concatenate(([white[0]], np.diff(white))).astype(np.float32)
+    breath /= np.max(np.abs(breath)) + 1e-8
+    return breath * amplitude
+
+
 class TestNoiseReducer:
     def test_init_defaults(self):
         reducer = NoiseReducer(SR)
@@ -83,3 +97,28 @@ class TestNoiseReducer:
         assert reducer.prop_decrease == 1.0
         reducer2 = NoiseReducer(SR, prop_decrease=-0.5)
         assert reducer2.prop_decrease == 0.0
+
+    def test_suppress_breath_sounds_reduces_breath_like_segment(self):
+        reducer = NoiseReducer(SR, breath_reduce_strength=0.5)
+        base = _make_sine(freq=220.0, duration=1.0) * 0.06
+        breath = np.zeros_like(base)
+        start, end = int(0.55 * SR), int(0.75 * SR)
+        breath[start:end] = _make_breathy_noise(duration=(end - start) / SR, amplitude=0.08)
+        mixed = base + breath
+
+        cleaned = reducer._suppress_breath_sounds(mixed)
+
+        # Use diff energy as high-frequency proxy where breath dominates.
+        before_hf = np.mean(np.diff(mixed[start:end]) ** 2)
+        after_hf = np.mean(np.diff(cleaned[start:end]) ** 2)
+        assert after_hf < before_hf * 0.93
+
+    def test_suppress_breath_sounds_preserves_soft_voiced_signal(self):
+        reducer = NoiseReducer(SR, breath_reduce_strength=0.5)
+        soft_voice = (_make_sine(freq=220.0, duration=1.0) * 0.04).astype(np.float32)
+
+        cleaned = reducer._suppress_breath_sounds(soft_voice)
+
+        before_rms = float(np.sqrt(np.mean(soft_voice ** 2)))
+        after_rms = float(np.sqrt(np.mean(cleaned ** 2)))
+        assert after_rms > before_rms * 0.92
