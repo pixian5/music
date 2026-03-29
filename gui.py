@@ -18,6 +18,7 @@ import subprocess
 from music_editor.audio_io import load_audio, save_audio
 from music_editor.noise_reduction import NoiseReducer
 from music_editor.effects import AudioEffects
+from music_editor import __version__
 
 OUTPUT_FORMATS = ("wav", "flac", "ogg", "mp3")
 
@@ -57,7 +58,7 @@ class _Worker(threading.Thread):
 class MusicEditorApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("音乐编辑器 – Music Editor")
+        self.title(f"音乐编辑器 v{__version__} – Music Editor")
         self.resizable(True, True)
         self.minsize(640, 500)
 
