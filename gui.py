@@ -63,7 +63,7 @@ class MusicEditorApp(tk.Tk):
         self._sr = None
         self._input_path = tk.StringVar()
         self._output_path = tk.StringVar()
-        self._output_format = tk.StringVar(value="wav")
+        self._output_format = tk.StringVar(value="mp3")
         self._status = tk.StringVar(value="就绪 / Ready")
 
         self._build_ui()
@@ -170,9 +170,29 @@ class MusicEditorApp(tk.Tk):
                   orient="horizontal", length=220).grid(row=3, column=1, sticky="w",
                                                         pady=(8, 0))
 
+        self._breath_enabled = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            frame,
+            text="抑制换气音 / Suppress breath sounds",
+            variable=self._breath_enabled,
+        ).grid(row=4, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        ttk.Label(frame, text="换气音抑制强度 / Breath strength (0–1):").grid(
+            row=5, column=0, sticky="w", pady=(8, 0)
+        )
+        self._breath_strength = tk.DoubleVar(value=0.35)
+        ttk.Scale(
+            frame,
+            from_=0.0,
+            to=1.0,
+            variable=self._breath_strength,
+            orient="horizontal",
+            length=220,
+        ).grid(row=5, column=1, sticky="w", pady=(8, 0))
+
         ttk.Button(frame, text="执行降噪 / Apply Noise Removal",
                    command=self._run_denoise).grid(
-            row=4, column=0, columnspan=2, pady=10
+            row=6, column=0, columnspan=2, pady=10
         )
 
         self._toggle_noise_seg()
@@ -429,17 +449,23 @@ class MusicEditorApp(tk.Tk):
         sr = self._sr
         mode = self._noise_mode.get()
         prop = self._prop_decrease.get()
+        breath_enabled = self._breath_enabled.get()
+        breath_strength = self._breath_strength.get()
         start = self._noise_start.get()
         end = self._noise_end.get()
         out = self._output_path.get()
 
         def _work():
-            reducer = NoiseReducer(sr, prop_decrease=prop)
+            reducer = NoiseReducer(
+                sr,
+                prop_decrease=prop,
+                breath_reduce_strength=breath_strength,
+            )
             if mode == "manual":
                 reducer.set_noise_profile_from_segment(audio, start, end)
             else:
                 reducer.detect_and_set_noise_profile(audio)
-            result = reducer.reduce(audio)
+            result = reducer.reduce(audio, apply_breath_suppression=breath_enabled)
             save_audio(out, result, sr)
 
         self._set_status("正在降噪… / Reducing noise…")
