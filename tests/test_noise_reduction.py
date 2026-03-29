@@ -25,6 +25,7 @@ class TestNoiseReducer:
         reducer = NoiseReducer(SR)
         assert reducer.sample_rate == SR
         assert reducer.prop_decrease == 1.0
+        assert reducer.breath_suppression == 0.45
         assert reducer.n_fft == 2048
         assert reducer._noise_profile is None
 
@@ -83,3 +84,26 @@ class TestNoiseReducer:
         assert reducer.prop_decrease == 1.0
         reducer2 = NoiseReducer(SR, prop_decrease=-0.5)
         assert reducer2.prop_decrease == 0.0
+
+    def test_breath_suppression_reduces_high_band_more(self):
+        # Synthetic "breath-like" segment: strong high-frequency hiss + low tone.
+        t = np.linspace(0, 1.0, SR, endpoint=False)
+        tone = 0.08 * np.sin(2 * np.pi * 220 * t).astype(np.float32)
+        rng = np.random.default_rng(7)
+        hiss = (rng.standard_normal(SR).astype(np.float32) * 0.08)
+        hiss = hiss - np.convolve(hiss, np.ones(9) / 9.0, mode="same")  # emphasize HF
+        audio = (tone + hiss).astype(np.float32)
+
+        reducer = NoiseReducer(SR, breath_suppression=0.8)
+        reducer.set_noise_profile_from_array(hiss[: SR // 4])
+        out = reducer.reduce(audio)
+
+        # Compare HF/LF energy ratio before vs after.
+        def _band_ratio(x: np.ndarray) -> float:
+            spec = np.fft.rfft(x)
+            freqs = np.fft.rfftfreq(len(x), d=1.0 / SR)
+            hi = np.mean(np.abs(spec[freqs >= 3500]))
+            lo = np.mean(np.abs(spec[(freqs >= 120) & (freqs <= 1200)])) + 1e-10
+            return float(hi / lo)
+
+        assert _band_ratio(out) < _band_ratio(audio)
