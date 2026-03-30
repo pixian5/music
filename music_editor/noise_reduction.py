@@ -235,6 +235,24 @@ class NoiseReducer:
             return np.stack(channels, axis=1)
         return self._suppress_breath_noise(audio.astype(np.float32))
 
+    def suppress_breath_sounds_with_frames(
+        self, audio: np.ndarray
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Suppress breath sounds and return detected breath-frame mask.
+        """
+        if audio.ndim == 2:
+            processed = self.suppress_breath_sounds(audio)
+            _, breath_frames = self._suppress_breath_noise(
+                _to_mono(audio).astype(np.float32),
+                return_breath_frames=True,
+            )
+            return processed, breath_frames
+        return self._suppress_breath_noise(
+            audio.astype(np.float32),
+            return_breath_frames=True,
+        )
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -387,14 +405,21 @@ class NoiseReducer:
             return audio_clean[:n].astype(np.float32)
         return np.pad(audio_clean, (0, n - len(audio_clean))).astype(np.float32)
 
-    def _suppress_breath_noise(self, audio: np.ndarray) -> np.ndarray:
+    def _suppress_breath_noise(
+        self,
+        audio: np.ndarray,
+        return_breath_frames: bool = False,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """
         Suppress breath/inhalation noise (typically broadband with strong
         high-frequency frication energy) while preserving voiced regions.
         """
         strength = self._effective_breath_strength
         if strength <= 1e-6 or len(audio) < 64:
-            return audio.astype(np.float32)
+            out = audio.astype(np.float32)
+            if return_breath_frames:
+                return out, np.zeros(0, dtype=bool)
+            return out
 
         nperseg, noverlap = self._effective_fft_params(len(audio))
         freqs, _, zxx = stft(
@@ -422,7 +447,10 @@ class NoiseReducer:
         lo_mask = (freqs >= 100.0) & (freqs <= lo_end)
         mid_mask = (freqs >= 1200.0) & (freqs <= 3200.0)
         if not np.any(hi_mask) or not np.any(lo_mask):
-            return audio.astype(np.float32)
+            out = audio.astype(np.float32)
+            if return_breath_frames:
+                return out, np.zeros(zxx.shape[1], dtype=bool)
+            return out
 
         hi_mag = mag[hi_mask]
         hi_energy = np.mean(hi_mag, axis=0)
@@ -557,7 +585,10 @@ class NoiseReducer:
                     )
                     has_inhale_signature = quiet_hump_signature
                 if not has_inhale_signature:
-                    return audio.astype(np.float32)
+                    out = audio.astype(np.float32)
+                    if return_breath_frames:
+                        return out, np.zeros_like(hi_ratio, dtype=bool)
+                    return out
                 surrogate = (
                     (hi_ratio > ratio_th * (0.55 if extreme_mode else 0.65))
                     & quiet_frames
@@ -584,9 +615,15 @@ class NoiseReducer:
                 if np.any(surrogate):
                     breath_frames = surrogate
                 else:
-                    return audio.astype(np.float32)
+                    out = audio.astype(np.float32)
+                    if return_breath_frames:
+                        return out, np.zeros_like(hi_ratio, dtype=bool)
+                    return out
             else:
-                return audio.astype(np.float32)
+                out = audio.astype(np.float32)
+                if return_breath_frames:
+                    return out, np.zeros_like(hi_ratio, dtype=bool)
+                return out
 
         if ultra_mode or extreme_mode:
             original_breath_frames = breath_frames.copy()
@@ -721,7 +758,10 @@ class NoiseReducer:
                 breath_gain=breath_gain,
                 segment_factor=segment_factor * strength,
             )
-        return out.astype(np.float32)
+        out = out.astype(np.float32)
+        if return_breath_frames:
+            return out, breath_frames
+        return out
 
     def _apply_breath_segment_ducking(
         self,

@@ -128,6 +128,25 @@ class TestNoiseReducer:
         y = reducer.suppress_breath_sounds(x)
         assert y.shape == x.shape
 
+    def test_public_suppress_breath_sounds_with_frames_api(self):
+        reducer = NoiseReducer(SR, breath_suppression=0.7, breath_method="extreme")
+        x = _make_sine(freq=220.0, duration=0.4) + _make_breathy_noise(duration=0.4, amplitude=0.05)
+        y_plain = reducer.suppress_breath_sounds(x)
+        y_with_frames, frames = reducer.suppress_breath_sounds_with_frames(x)
+        assert y_with_frames.shape == x.shape
+        assert frames.dtype == np.bool_
+        assert frames.ndim == 1
+        np.testing.assert_allclose(y_plain, y_with_frames, rtol=1e-6, atol=1e-6)
+
+    def test_suppress_breath_sounds_with_frames_stereo(self):
+        reducer = NoiseReducer(SR, breath_suppression=0.7, breath_method="extreme")
+        x = _make_sine(freq=220.0, duration=0.4) + _make_breathy_noise(duration=0.4, amplitude=0.05)
+        stereo = np.stack([x, x], axis=1).astype(np.float32)
+        y, frames = reducer.suppress_breath_sounds_with_frames(stereo)
+        assert y.shape == stereo.shape
+        assert frames.dtype == np.bool_
+        assert frames.ndim == 1
+
     def test_breath_strength_parameter_changes_result(self):
         rng = np.random.default_rng(9)
         hiss = (rng.standard_normal(SR).astype(np.float32) * 0.06)

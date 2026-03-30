@@ -14,6 +14,18 @@ import threading
 import os
 import platform
 import subprocess
+import tempfile
+
+import numpy as np
+from scipy.signal import stft
+
+try:
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    from matplotlib.figure import Figure
+
+    _MATPLOTLIB_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _MATPLOTLIB_AVAILABLE = False
 
 from music_editor.audio_io import load_audio, save_audio
 from music_editor.noise_reduction import NoiseReducer
@@ -30,6 +42,35 @@ def _replace_extension(path: str, extension: str) -> str:
 
 def _suggest_output_path(input_path: str, output_format: str) -> str:
     return _replace_extension(f"{os.path.splitext(input_path)[0]}_output", output_format)
+
+
+def _frame_mask_to_segments(
+    frame_mask: np.ndarray,
+    hop_length: int,
+    sample_rate: int,
+    total_samples: int,
+) -> list[tuple[float, float]]:
+    if frame_mask.size == 0:
+        return []
+    idx = np.flatnonzero(frame_mask)
+    if idx.size == 0:
+        return []
+    starts = [int(idx[0])]
+    ends: list[int] = []
+    for i in range(1, idx.size):
+        if idx[i] != idx[i - 1] + 1:
+            ends.append(int(idx[i - 1]))
+            starts.append(int(idx[i]))
+    ends.append(int(idx[-1]))
+    segments: list[tuple[float, float]] = []
+    max_sample = max(total_samples - 1, 0)
+    for start_frame, end_frame in zip(starts, ends):
+        start_sample = min(start_frame * hop_length, max_sample)
+        end_sample = min((end_frame + 1) * hop_length, total_samples)
+        if end_sample <= start_sample:
+            continue
+        segments.append((start_sample / sample_rate, end_sample / sample_rate))
+    return segments
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +109,11 @@ class MusicEditorApp(tk.Tk):
         self._output_path = tk.StringVar()
         self._output_format = tk.StringVar(value="mp3")
         self._status = tk.StringVar(value="就绪 / Ready")
+        self._last_breath_source = None
+        self._last_breath_output = None
+        self._last_breath_segments = []
+        self._selected_breath_segment = None
+        self._preview_temp_file = None
 
         self._build_ui()
 
@@ -258,6 +304,41 @@ class MusicEditorApp(tk.Tk):
             wraplength=520,
             justify="left",
         ).grid(row=6, column=0, columnspan=2, sticky="w")
+
+        self._breath_play_button = ttk.Button(
+            frame,
+            text="播放选中片段 / Play Selected Segment",
+            command=self._play_selected_breath_segment,
+            state="disabled",
+        )
+        self._breath_play_button.grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 4))
+        self._breath_selection_text = tk.StringVar(
+            value="未选中片段 / No segment selected"
+        )
+        ttk.Label(
+            frame,
+            textvariable=self._breath_selection_text,
+            foreground="#2f7d32",
+        ).grid(row=8, column=0, columnspan=2, sticky="w")
+
+        self._breath_plot_container = ttk.Frame(frame)
+        self._breath_plot_container.grid(row=9, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        frame.grid_columnconfigure(1, weight=1)
+        frame.grid_rowconfigure(9, weight=1)
+        if _MATPLOTLIB_AVAILABLE:
+            self._breath_figure = Figure(figsize=(7, 3.2), dpi=100)
+            self._breath_ax_source = self._breath_figure.add_subplot(211)
+            self._breath_ax_output = self._breath_figure.add_subplot(212, sharex=self._breath_ax_source)
+            self._breath_canvas = FigureCanvasTkAgg(self._breath_figure, master=self._breath_plot_container)
+            self._breath_canvas.get_tk_widget().pack(fill="both", expand=True)
+            self._breath_canvas.mpl_connect("button_press_event", self._on_breath_plot_click)
+            self._draw_breath_spectrograms()
+        else:
+            ttk.Label(
+                self._breath_plot_container,
+                text="未安装 matplotlib，无法显示频谱 / matplotlib not available for spectrogram display",
+                foreground="#666",
+            ).pack(anchor="w")
         return frame
 
     def _toggle_noise_seg(self):
@@ -484,6 +565,17 @@ class MusicEditorApp(tk.Tk):
         n = self._audio.shape[0] if self._audio.ndim == 2 else len(self._audio)
         dur = n / self._sr
         ch = self._audio.shape[1] if self._audio.ndim == 2 else 1
+        mono = self._audio.mean(axis=1).astype(np.float32) if self._audio.ndim == 2 else self._audio.astype(np.float32)
+        self._last_breath_source = mono
+        self._last_breath_output = None
+        self._last_breath_segments = []
+        self._selected_breath_segment = None
+        if hasattr(self, "_breath_play_button"):
+            self._breath_play_button.configure(state="disabled")
+        if hasattr(self, "_breath_selection_text"):
+            self._breath_selection_text.set("未选中片段 / No segment selected")
+        if hasattr(self, "_draw_breath_spectrograms"):
+            self._draw_breath_spectrograms()
         self._set_status(
             f"已加载 / Loaded: {dur:.1f}s, {self._sr} Hz, {ch} ch"
         )
@@ -550,15 +642,16 @@ class MusicEditorApp(tk.Tk):
                 breath_sensitivity=sensitivity,
                 breath_band_focus=band_focus,
             )
-            result = (
-                reducer.suppress_breath_sounds(audio)
-                if enabled
-                else audio.astype("float32", copy=False)
-            )
+            if enabled:
+                result, breath_frames = reducer.suppress_breath_sounds_with_frames(audio)
+            else:
+                result = audio.astype("float32", copy=False)
+                breath_frames = np.zeros(0, dtype=bool)
             save_audio(out, result, sr)
+            return result, breath_frames, reducer.hop_length
 
         self._set_status("正在抑制换气音… / Suppressing breath sounds…")
-        self._run_async(_work, lambda _: self._set_status(f"已保存 / Saved → {out}"))
+        self._run_async(_work, lambda payload: self._on_breath_suppression_done(payload, out))
 
     def _run_normalize(self):
         if not self._require_audio() or not self._require_output():
@@ -719,6 +812,137 @@ class MusicEditorApp(tk.Tk):
 
         self._set_status("正在淡出… / Applying fade out…")
         self._run_async(_work, lambda _: self._set_status(f"已保存 / Saved → {out}"))
+
+    def _on_breath_suppression_done(self, payload, out_path: str):
+        result, breath_frames, hop_length = payload
+        mono_source = self._audio.mean(axis=1).astype(np.float32) if self._audio.ndim == 2 else self._audio.astype(np.float32)
+        mono_output = result.mean(axis=1).astype(np.float32) if result.ndim == 2 else result.astype(np.float32)
+        self._last_breath_source = mono_source
+        self._last_breath_output = mono_output
+        self._last_breath_segments = _frame_mask_to_segments(
+            frame_mask=np.asarray(breath_frames, dtype=bool),
+            hop_length=int(max(1, hop_length)),
+            sample_rate=int(self._sr),
+            total_samples=int(len(mono_source)),
+        )
+        self._selected_breath_segment = None
+        self._breath_play_button.configure(state="disabled")
+        if len(self._last_breath_segments) > 0:
+            self._breath_selection_text.set(
+                f"检测到 {len(self._last_breath_segments)} 段吸气，点击频谱中的绿色区域选择 / "
+                f"{len(self._last_breath_segments)} inhale segments detected"
+            )
+        else:
+            self._breath_selection_text.set("未检测到吸气片段 / No inhale segments detected")
+        self._draw_breath_spectrograms()
+        self._set_status(f"已保存 / Saved → {out_path}")
+
+    def _draw_breath_spectrograms(self):
+        if not _MATPLOTLIB_AVAILABLE or not hasattr(self, "_breath_figure"):
+            return
+        self._breath_ax_source.clear()
+        self._breath_ax_output.clear()
+
+        if self._last_breath_source is None or self._sr is None:
+            self._breath_ax_source.set_title("源文件频谱 / Source Spectrogram")
+            self._breath_ax_output.set_title("输出频谱 / Output Spectrogram")
+            self._breath_ax_output.set_xlabel("Time (s)")
+            self._breath_figure.tight_layout()
+            self._breath_canvas.draw_idle()
+            return
+
+        for ax, signal, title in (
+            (self._breath_ax_source, self._last_breath_source, "源文件频谱 / Source Spectrogram"),
+            (
+                self._breath_ax_output,
+                self._last_breath_output if self._last_breath_output is not None else self._last_breath_source,
+                "输出频谱 / Output Spectrogram",
+            ),
+        ):
+            nperseg = int(min(1024, max(128, len(signal))))
+            hop = max(32, nperseg // 4)
+            noverlap = nperseg - hop
+            freqs, times, zxx = stft(
+                signal,
+                fs=self._sr,
+                nperseg=nperseg,
+                noverlap=noverlap,
+                window="hann",
+            )
+            mag_db = 20.0 * np.log10(np.abs(zxx) + 1e-7)
+            ax.pcolormesh(times, freqs, mag_db, shading="gouraud", cmap="magma")
+            ax.set_ylim(0, min(8000, self._sr // 2))
+            ax.set_ylabel("Hz")
+            ax.set_title(title)
+            for idx, (start_t, end_t) in enumerate(self._last_breath_segments):
+                color = "#00aa00"
+                alpha = 0.22
+                if self._selected_breath_segment == idx:
+                    color = "#00dd55"
+                    alpha = 0.35
+                ax.axvspan(start_t, end_t, color=color, alpha=alpha)
+        self._breath_ax_output.set_xlabel("Time (s)")
+        self._breath_figure.tight_layout()
+        self._breath_canvas.draw_idle()
+
+    def _on_breath_plot_click(self, event):
+        if event.inaxes not in {getattr(self, "_breath_ax_source", None), getattr(self, "_breath_ax_output", None)}:
+            return
+        if not self._last_breath_segments or event.xdata is None:
+            return
+        t = float(event.xdata)
+        selected = None
+        for idx, (start_t, end_t) in enumerate(self._last_breath_segments):
+            if start_t <= t <= end_t:
+                selected = idx
+                break
+        if selected is None:
+            return
+        self._selected_breath_segment = selected
+        start_t, end_t = self._last_breath_segments[selected]
+        self._breath_play_button.configure(state="normal")
+        self._breath_selection_text.set(
+            f"已选中片段 / Selected: {start_t:.2f}s - {end_t:.2f}s"
+        )
+        self._draw_breath_spectrograms()
+
+    def _play_selected_breath_segment(self):
+        if self._last_breath_output is None or self._selected_breath_segment is None:
+            return
+        start_t, end_t = self._last_breath_segments[self._selected_breath_segment]
+        start = max(0, int(start_t * self._sr))
+        end = min(len(self._last_breath_output), int(end_t * self._sr))
+        if end <= start:
+            return
+        segment = self._last_breath_output[start:end]
+        with tempfile.NamedTemporaryFile(prefix="music_breath_", suffix=".wav", delete=False) as tmp:
+            tmp_path = tmp.name
+        save_audio(tmp_path, segment.astype(np.float32), self._sr)
+        self._preview_temp_file = tmp_path
+        self._play_audio_file(tmp_path)
+
+    def _play_audio_file(self, path: str):
+        system = platform.system()
+        if system == "Windows":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif system == "Darwin":
+            subprocess.run(["open", path], check=False)
+        else:
+            player = None
+            for candidate in ("xdg-open", "ffplay", "aplay", "paplay"):
+                if subprocess.run(["which", candidate], capture_output=True, text=True).returncode == 0:
+                    player = candidate
+                    break
+            if player is None:
+                raise RuntimeError("No suitable audio player found (xdg-open/ffplay/aplay/paplay).")
+            cmd = [player, path]
+            if player == "ffplay":
+                cmd = [player, "-nodisp", "-autoexit", path]
+            subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
     # ------------------------------------------------------------------
     # Async helper

@@ -2,11 +2,18 @@
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 pytest.importorskip("tkinter")
 
-from gui import MusicEditorApp, OUTPUT_FORMATS, _replace_extension, _suggest_output_path
+from gui import (
+    MusicEditorApp,
+    OUTPUT_FORMATS,
+    _frame_mask_to_segments,
+    _replace_extension,
+    _suggest_output_path,
+)
 
 
 class _DummyVar:
@@ -66,3 +73,14 @@ def test_output_formats_include_mp3():
 
 def test_suggest_output_path_defaults_to_mp3_extension():
     assert _suggest_output_path("/tmp/song.wav", "mp3") == "/tmp/song_output.mp3"
+
+
+def test_frame_mask_to_segments():
+    mask = np.array([False, True, True, False, True, False], dtype=bool)
+    segments = _frame_mask_to_segments(mask, hop_length=100, sample_rate=1000, total_samples=800)
+    assert segments == [(0.1, 0.3), (0.4, 0.5)]
+
+
+def test_frame_mask_to_segments_empty():
+    mask = np.array([], dtype=bool)
+    assert _frame_mask_to_segments(mask, hop_length=100, sample_rate=1000, total_samples=800) == []
