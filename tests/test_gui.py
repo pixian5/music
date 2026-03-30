@@ -104,7 +104,7 @@ def test_prepare_spectrogram_signal_keeps_short_signal():
     signal = np.arange(1000, dtype=np.float32)
     plot_signal, plot_sr = _prepare_spectrogram_signal(signal, sample_rate=48000)
     assert np.array_equal(plot_signal, signal)
-    assert plot_sr == pytest.approx(48000.0)
+    assert plot_sr == 48000.0
 
 
 def test_prepare_spectrogram_signal_downsamples_long_signal():
@@ -114,3 +114,12 @@ def test_prepare_spectrogram_signal_downsamples_long_signal():
     assert plot_signal[0] == signal[0]
     assert plot_signal[1] == signal[2]
     assert plot_sr == pytest.approx(24000.0)
+
+
+def test_prepare_spectrogram_signal_downsamples_with_larger_stride():
+    signal = np.arange(_SPECTROGRAM_MAX_SAMPLES * 5 + 1, dtype=np.float32)
+    plot_signal, plot_sr = _prepare_spectrogram_signal(signal, sample_rate=48000)
+    assert len(plot_signal) <= _SPECTROGRAM_MAX_SAMPLES
+    assert plot_signal[0] == signal[0]
+    assert plot_signal[1] == signal[6]
+    assert plot_sr == pytest.approx(8000.0)
