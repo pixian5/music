@@ -38,6 +38,7 @@ _SPECTROGRAM_MAX_NPERSEG = 1024
 _SPECTROGRAM_MIN_NPERSEG = 128
 _SPECTROGRAM_ABSOLUTE_MIN_NPERSEG = 8
 _SPECTROGRAM_MIN_MAGNITUDE = 1e-7
+_SPECTROGRAM_MAX_SAMPLES = 200_000
 
 
 def _replace_extension(path: str, extension: str) -> str:
@@ -80,6 +81,13 @@ def _frame_mask_to_segments(
 
 def _to_mono_float32(audio: np.ndarray) -> np.ndarray:
     return audio.mean(axis=1).astype(np.float32) if audio.ndim == 2 else audio.astype(np.float32)
+
+
+def _prepare_spectrogram_signal(signal: np.ndarray, sample_rate: int) -> tuple[np.ndarray, float]:
+    if signal.size <= _SPECTROGRAM_MAX_SAMPLES:
+        return signal, float(sample_rate)
+    stride = int(np.ceil(signal.size / _SPECTROGRAM_MAX_SAMPLES))
+    return signal[::stride], float(sample_rate) / float(stride)
 
 
 # ---------------------------------------------------------------------------
@@ -872,17 +880,18 @@ class MusicEditorApp(tk.Tk):
                 "输出频谱 / Output Spectrogram",
             ),
         ):
+            plot_signal, plot_sr = _prepare_spectrogram_signal(signal, self._sr)
             nperseg = int(
                 min(
                     _SPECTROGRAM_MAX_NPERSEG,
-                    max(_SPECTROGRAM_ABSOLUTE_MIN_NPERSEG, len(signal)),
+                    max(_SPECTROGRAM_ABSOLUTE_MIN_NPERSEG, len(plot_signal)),
                 )
             )
             hop = max(1, nperseg // 4)
             noverlap = max(0, nperseg - hop)
             freqs, times, zxx = stft(
-                signal,
-                fs=self._sr,
+                plot_signal,
+                fs=plot_sr,
                 nperseg=nperseg,
                 noverlap=noverlap,
                 window="hann",
