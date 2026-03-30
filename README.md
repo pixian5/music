@@ -105,8 +105,10 @@ music-editor fade-out input.wav output.wav --duration 2
 
 “唱歌换气音”功能位置：在图形界面最前面的 **换气音抑制 / Breath** 标签页，提供独立开关、抑制方法（ultra / deep / hybrid / attenuate / high_band）、抑制强度、检测灵敏度和高频重点的细粒度控制。  
 建议参数（换气音明显时）：`method=deep, strength>=75, sensitivity>=75, high-band focus>=80`；若仍明显，改为 `method=ultra` 并将其余参数提高到 `85+`（GUI 为 0–100 刻度）。
+该标签页会显示源文件与输出文件的频谱（上下两幅图），并用绿色标注识别到的吸气片段。可在频谱图上点击绿色片段进行选择，然后点击“播放选中片段”按钮试听该片段。  
 Where to find “breath suppression for singing”: the first GUI tab is **换气音抑制 / Breath**, with independent toggle, method selection (ultra / deep / hybrid / attenuate / high_band), strength, sensitivity, and high-band focus controls.  
 Suggested stronger settings (for obvious inhales): `method=deep, strength>=75, sensitivity>=75, high-band focus>=80`; if still obvious, switch to `method=ultra` and raise others to `85+` (GUI uses a 0–100 scale).
+This tab now shows source/output spectrograms (top/bottom) and highlights detected inhale segments in green. Click a green segment on the spectrogram, then press “Play Selected Segment” to preview it.
 
 ---
 
