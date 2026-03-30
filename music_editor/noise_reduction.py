@@ -242,12 +242,27 @@ class NoiseReducer:
         Suppress breath sounds and return detected breath-frame mask.
         """
         if audio.ndim == 2:
-            processed = self.suppress_breath_sounds(audio)
-            _, breath_frames = self._suppress_breath_noise(
-                _to_mono(audio).astype(np.float32),
-                return_breath_frames=True,
-            )
-            return processed, breath_frames
+            channels = []
+            breath_frames = np.zeros(0, dtype=bool)
+            for ch in range(audio.shape[1]):
+                ch_out, ch_frames = self._suppress_breath_noise(
+                    audio[:, ch].astype(np.float32),
+                    return_breath_frames=True,
+                )
+                channels.append(ch_out)
+                if breath_frames.size == 0:
+                    breath_frames = ch_frames
+                else:
+                    if ch_frames.size > breath_frames.size:
+                        expanded = np.zeros(ch_frames.size, dtype=bool)
+                        expanded[: breath_frames.size] = breath_frames
+                        breath_frames = expanded
+                    elif breath_frames.size > ch_frames.size:
+                        expanded = np.zeros(breath_frames.size, dtype=bool)
+                        expanded[: ch_frames.size] = ch_frames
+                        ch_frames = expanded
+                    breath_frames = breath_frames | ch_frames
+            return np.stack(channels, axis=1), breath_frames
         return self._suppress_breath_noise(
             audio.astype(np.float32),
             return_breath_frames=True,

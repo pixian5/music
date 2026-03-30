@@ -128,7 +128,7 @@ class TestNoiseReducer:
         y = reducer.suppress_breath_sounds(x)
         assert y.shape == x.shape
 
-    def test_public_suppress_breath_sounds_with_frames_api(self):
+    def test_suppress_breath_sounds_with_frames(self):
         reducer = NoiseReducer(SR, breath_suppression=0.7, breath_method="extreme")
         x = _make_sine(freq=220.0, duration=0.4) + _make_breathy_noise(duration=0.4, amplitude=0.05)
         y_plain = reducer.suppress_breath_sounds(x)

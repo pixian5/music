@@ -84,3 +84,15 @@ def test_frame_mask_to_segments():
 def test_frame_mask_to_segments_empty():
     mask = np.array([], dtype=bool)
     assert _frame_mask_to_segments(mask, hop_length=100, sample_rate=1000, total_samples=800) == []
+
+
+def test_frame_mask_to_segments_clamps_total_samples():
+    mask = np.array([False, False, True, True, True], dtype=bool)
+    segments = _frame_mask_to_segments(mask, hop_length=300, sample_rate=1000, total_samples=1000)
+    assert segments == [(0.6, 1.0)]
+
+
+def test_frame_mask_to_segments_exact_total_samples_boundary():
+    mask = np.array([False, True, True], dtype=bool)
+    segments = _frame_mask_to_segments(mask, hop_length=250, sample_rate=1000, total_samples=750)
+    assert segments == [(0.25, 0.75)]

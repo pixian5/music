@@ -15,6 +15,7 @@ import os
 import platform
 import subprocess
 import tempfile
+import shutil
 
 import numpy as np
 from scipy.signal import stft
@@ -33,6 +34,10 @@ from music_editor.effects import AudioEffects
 from music_editor import __version__
 
 OUTPUT_FORMATS = ("wav", "flac", "ogg", "mp3")
+_SPECTROGRAM_MAX_NPERSEG = 1024
+_SPECTROGRAM_MIN_NPERSEG = 128
+_SPECTROGRAM_ABSOLUTE_MIN_NPERSEG = 8
+_SPECTROGRAM_MIN_MAGNITUDE = 1e-7
 
 
 def _replace_extension(path: str, extension: str) -> str:
@@ -71,6 +76,10 @@ def _frame_mask_to_segments(
             continue
         segments.append((start_sample / sample_rate, end_sample / sample_rate))
     return segments
+
+
+def _to_mono_float32(audio: np.ndarray) -> np.ndarray:
+    return audio.mean(axis=1).astype(np.float32) if audio.ndim == 2 else audio.astype(np.float32)
 
 
 # ---------------------------------------------------------------------------
@@ -565,7 +574,7 @@ class MusicEditorApp(tk.Tk):
         n = self._audio.shape[0] if self._audio.ndim == 2 else len(self._audio)
         dur = n / self._sr
         ch = self._audio.shape[1] if self._audio.ndim == 2 else 1
-        mono = self._audio.mean(axis=1).astype(np.float32) if self._audio.ndim == 2 else self._audio.astype(np.float32)
+        mono = _to_mono_float32(self._audio)
         self._last_breath_source = mono
         self._last_breath_output = None
         self._last_breath_segments = []
@@ -815,8 +824,12 @@ class MusicEditorApp(tk.Tk):
 
     def _on_breath_suppression_done(self, payload, out_path: str):
         result, breath_frames, hop_length = payload
-        mono_source = self._audio.mean(axis=1).astype(np.float32) if self._audio.ndim == 2 else self._audio.astype(np.float32)
-        mono_output = result.mean(axis=1).astype(np.float32) if result.ndim == 2 else result.astype(np.float32)
+        mono_source = (
+            self._last_breath_source
+            if self._last_breath_source is not None
+            else _to_mono_float32(self._audio)
+        )
+        mono_output = _to_mono_float32(result)
         self._last_breath_source = mono_source
         self._last_breath_output = mono_output
         self._last_breath_segments = _frame_mask_to_segments(
@@ -859,9 +872,14 @@ class MusicEditorApp(tk.Tk):
                 "输出频谱 / Output Spectrogram",
             ),
         ):
-            nperseg = int(min(1024, max(128, len(signal))))
-            hop = max(32, nperseg // 4)
-            noverlap = nperseg - hop
+            nperseg = int(
+                min(
+                    _SPECTROGRAM_MAX_NPERSEG,
+                    max(_SPECTROGRAM_ABSOLUTE_MIN_NPERSEG, len(signal)),
+                )
+            )
+            hop = max(1, nperseg // 4)
+            noverlap = max(0, nperseg - hop)
             freqs, times, zxx = stft(
                 signal,
                 fs=self._sr,
@@ -869,7 +887,7 @@ class MusicEditorApp(tk.Tk):
                 noverlap=noverlap,
                 window="hann",
             )
-            mag_db = 20.0 * np.log10(np.abs(zxx) + 1e-7)
+            mag_db = 20.0 * np.log10(np.abs(zxx) + _SPECTROGRAM_MIN_MAGNITUDE)
             ax.pcolormesh(times, freqs, mag_db, shading="gouraud", cmap="magma")
             ax.set_ylim(0, min(8000, self._sr // 2))
             ax.set_ylabel("Hz")
@@ -886,7 +904,13 @@ class MusicEditorApp(tk.Tk):
         self._breath_canvas.draw_idle()
 
     def _on_breath_plot_click(self, event):
-        if event.inaxes not in {getattr(self, "_breath_ax_source", None), getattr(self, "_breath_ax_output", None)}:
+        if (
+            (not _MATPLOTLIB_AVAILABLE)
+            or not hasattr(self, "_breath_ax_source")
+            or not hasattr(self, "_breath_ax_output")
+        ):
+            return
+        if event.inaxes not in {self._breath_ax_source, self._breath_ax_output}:
             return
         if not self._last_breath_segments or event.xdata is None:
             return
@@ -914,6 +938,7 @@ class MusicEditorApp(tk.Tk):
         end = min(len(self._last_breath_output), int(end_t * self._sr))
         if end <= start:
             return
+        self._cleanup_preview_temp_file()
         segment = self._last_breath_output[start:end]
         with tempfile.NamedTemporaryFile(prefix="music_breath_", suffix=".wav", delete=False) as tmp:
             tmp_path = tmp.name
@@ -922,27 +947,49 @@ class MusicEditorApp(tk.Tk):
         self._play_audio_file(tmp_path)
 
     def _play_audio_file(self, path: str):
-        system = platform.system()
-        if system == "Windows":
-            os.startfile(path)  # type: ignore[attr-defined]
-        elif system == "Darwin":
-            subprocess.run(["open", path], check=False)
-        else:
-            player = None
-            for candidate in ("xdg-open", "ffplay", "aplay", "paplay"):
-                if subprocess.run(["which", candidate], capture_output=True, text=True).returncode == 0:
-                    player = candidate
-                    break
-            if player is None:
-                raise RuntimeError("No suitable audio player found (xdg-open/ffplay/aplay/paplay).")
-            cmd = [player, path]
-            if player == "ffplay":
-                cmd = [player, "-nodisp", "-autoexit", path]
-            subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+        try:
+            system = platform.system()
+            if system == "Windows":
+                os.startfile(path)  # type: ignore[attr-defined]
+            elif system == "Darwin":
+                subprocess.run(["open", path], check=False)
+            else:
+                player = None
+                for candidate in ("xdg-open", "ffplay", "aplay", "paplay"):
+                    if shutil.which(candidate):
+                        player = candidate
+                        break
+                if player is None:
+                    raise RuntimeError(
+                        "No suitable audio player found. Please install one of: "
+                        "xdg-open, ffplay, aplay, paplay."
+                    )
+                cmd = [player, path]
+                if player == "ffplay":
+                    cmd = [player, "-nodisp", "-autoexit", path]
+                subprocess.run(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+        except OSError as exc:
+            self._set_status(f"播放失败 / Playback failed: {exc}")
+            messagebox.showerror("Playback Error", str(exc))
+        except subprocess.SubprocessError as exc:
+            self._set_status(f"播放器错误 / Player error: {exc}")
+            messagebox.showerror("Playback Error", str(exc))
+        except RuntimeError as exc:
+            self._set_status(f"播放失败 / Playback failed: {exc}")
+            messagebox.showerror("Playback Error", str(exc))
+
+    def _cleanup_preview_temp_file(self):
+        if self._preview_temp_file and os.path.exists(self._preview_temp_file):
+            try:
+                os.remove(self._preview_temp_file)
+            except OSError:
+                pass
+        self._preview_temp_file = None
 
     # ------------------------------------------------------------------
     # Async helper
@@ -958,6 +1005,10 @@ class MusicEditorApp(tk.Tk):
 
     def _set_status(self, msg: str):
         self._status.set(msg)
+
+    def destroy(self):
+        self._cleanup_preview_temp_file()
+        super().destroy()
 
 
 # ---------------------------------------------------------------------------
